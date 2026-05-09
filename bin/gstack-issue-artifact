@@ -222,15 +222,23 @@ function normalizeRepoUrl(url: string): string {
 
 function ensureLabel(platform: Platform, label: string): void {
   const bin = cliBin(platform);
-  const check = Bun.spawnSync({ cmd: [bin, "label", "list", "--search", label] });
-  const existing = check.stdout.toString();
-  if (existing.includes(label)) return;
 
-  const color = LABEL_COLORS[label] ?? "0366d6";
-  if (platform === "github") {
-    Bun.spawnSync({ cmd: [bin, "label", "create", label, "--color", color, "--force"] });
+  if (platform === "gitlab") {
+    const check = Bun.spawnSync({ cmd: [bin, "label", "list", "--output", "json"] });
+    if (check.exitCode === 0) {
+      try {
+        const labels: Array<{ name: string }> = JSON.parse(check.stdout.toString());
+        if (labels.some(l => l.name === label)) return;
+      } catch {}
+    }
+    const color = LABEL_COLORS[label] ?? "0366d6";
+    Bun.spawnSync({ cmd: [bin, "label", "create", "--name", label, "--color", `#${color}`] });
   } else {
-    Bun.spawnSync({ cmd: [bin, "label", "create", label, "--color", `#${color}`] });
+    const check = Bun.spawnSync({ cmd: [bin, "label", "list", "--search", label] });
+    const existing = check.stdout.toString();
+    if (existing.includes(label)) return;
+    const color = LABEL_COLORS[label] ?? "0366d6";
+    Bun.spawnSync({ cmd: [bin, "label", "create", label, "--color", color, "--force"] });
   }
 }
 
@@ -353,7 +361,7 @@ function cmdRead(args: Map<string, string[]>): void {
   const labels: string[] = (raw.labels ?? []).map((l: any) => l.name ?? l);
 
   type RawComment = {
-    author: { login?: string; username?: string; access_level?: number };
+    author: { login?: string; username?: string; id?: number };
     body: string;
     createdAt?: string;
     created_at?: string;
@@ -366,6 +374,29 @@ function cmdRead(args: Map<string, string[]>): void {
   let droppedCount = 0;
 
   const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+  const gitlabAccessCache = new Map<string, number>();
+
+  function getGitlabAccessLevel(username: string): number {
+    if (gitlabAccessCache.has(username)) return gitlabAccessCache.get(username)!;
+    const result = Bun.spawnSync({
+      cmd: [bin, "api", `projects/:id/members/all?query=${encodeURIComponent(username)}`],
+    });
+    if (result.exitCode !== 0) {
+      gitlabAccessCache.set(username, 0);
+      return 0;
+    }
+    try {
+      const members: Array<{ username: string; access_level: number }> = JSON.parse(result.stdout.toString());
+      const match = members.find(m => m.username === username);
+      const level = match?.access_level ?? 0;
+      gitlabAccessCache.set(username, level);
+      return level;
+    } catch {
+      gitlabAccessCache.set(username, 0);
+      return 0;
+    }
+  }
 
   for (const c of allComments) {
     const author = c.author?.login ?? c.author?.username ?? "unknown";
@@ -383,8 +414,8 @@ function cmdRead(args: Map<string, string[]>): void {
         break;
       case "trusted-only":
         if (platform === "gitlab") {
-          const accessLevel = c.author?.access_level;
-          keep = typeof accessLevel === "number" && accessLevel >= 30;
+          const accessLevel = getGitlabAccessLevel(author);
+          keep = accessLevel >= 30;
         } else {
           keep = TRUSTED_ASSOCIATIONS.has(association);
         }
@@ -514,7 +545,7 @@ function cmdValidateUrl(args: Map<string, string[]>): void {
   let urlNorm: string;
   try {
     const parsed = new URL(url);
-    urlNorm = normalizeRepoUrl(parsed.origin + parsed.pathname.replace(/\/issues\/\d+$/, ""));
+    urlNorm = normalizeRepoUrl(parsed.origin + parsed.pathname.replace(/\/?-?\/issues\/\d+$/, ""));
   } catch {
     process.stderr.write(`${PREFIX} BLOCKED: cross-repo URL ${url} rejected\n`);
     process.exit(1);
