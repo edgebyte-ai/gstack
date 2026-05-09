@@ -1581,12 +1581,15 @@ POLICY_STATE=$(~/.claude/skills/gstack/bin/gstack-issue-repo-policy check --op w
 
 ISSUE_URL=$(~/.claude/skills/gstack/bin/gstack-issue-artifact create --kind gstack:design-doc --label design-system \
   --title "$ISSUE_ARTIFACT_TITLE" \
-  --body-file "$ISSUE_ARTIFACT_PATH") || {
+  --body-file "$ISSUE_ARTIFACT_PATH" 2>&1) || {
   echo "[issue-artifacts] FALLBACK: $(echo "$ISSUE_URL" | head -1)"
   exit 0
 }
 
-~/.claude/skills/gstack/bin/gstack-issue-artifact link-local --file "$ISSUE_ARTIFACT_PATH" --issue "$ISSUE_URL"
+LINK_OUT=$(~/.claude/skills/gstack/bin/gstack-issue-artifact link-local --file "$ISSUE_ARTIFACT_PATH" --issue "$ISSUE_URL" 2>&1) || {
+  echo "[issue-artifacts] FALLBACK: link-local failed: $(echo "$LINK_OUT" | head -1)"
+  exit 0
+}
 echo "[issue-artifacts] published gstack:design-doc -> $ISSUE_URL"
 ```
 <!-- @issue-artifacts:end -->
