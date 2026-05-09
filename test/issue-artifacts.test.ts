@@ -14,6 +14,7 @@ const ROOT = join(import.meta.dir, "..");
 const BIN = join(ROOT, "bin", "gstack-issue-artifact");
 const FIXTURES = join(ROOT, "test", "fixtures", "issue-artifacts");
 const SMOKE_SCENARIO = join(FIXTURES, "scenarios", "foundation-smoke.json");
+const GITLAB_TRUST_SCENARIO = join(FIXTURES, "scenarios", "gitlab-trust.json");
 
 function makeEnv(tmpDir: string, scenarioPath?: string) {
   const ledger = join(tmpDir, "recorded-calls.jsonl");
@@ -281,5 +282,100 @@ describe("issue-artifacts helper (AC9)", () => {
     expect(payload.issue_number).toBe(42);
     expect(payload.issue_title).toBeTruthy();
     expect(payload.repo).toContain("test/repo");
+  });
+});
+
+function runGlab(args: string[], tmpDir: string) {
+  const ledger = join(tmpDir, "glab-calls.jsonl");
+  const env: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    PATH: `${FIXTURES}:${process.env.PATH}`,
+    STUB_GLAB_LEDGER: ledger,
+    STUB_GLAB_SCENARIO: GITLAB_TRUST_SCENARIO,
+    GSTACK_HOME: join(tmpDir, ".gstack"),
+  };
+
+  mkdirSync(join(tmpDir, ".gstack"), { recursive: true });
+
+  const gitDir = join(tmpDir, ".git");
+  if (!existsSync(gitDir)) {
+    Bun.spawnSync({ cmd: ["git", "init"], cwd: tmpDir, env });
+    Bun.spawnSync({
+      cmd: ["git", "remote", "add", "origin", "git@gitlab.com:test/repo.git"],
+      cwd: tmpDir,
+      env,
+    });
+  }
+
+  const result = Bun.spawnSync({
+    cmd: ["bun", "run", BIN, ...args],
+    cwd: tmpDir,
+    env,
+  });
+
+  const ledgerEntries = existsSync(ledger)
+    ? readFileSync(ledger, "utf-8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l))
+    : [];
+
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout.toString().trim(),
+    stderr: result.stderr.toString().trim(),
+    ledger: ledgerEntries,
+  };
+}
+
+describe("gstack-issue-artifact (GitLab)", () => {
+  test("read --comments-trust trusted-only keeps Developer+ (access_level >= 30)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ia-gl-trust-"));
+
+    const result = runGlab(["read", "42", "--comments-trust", "trusted-only"], tmpDir);
+    expect(result.exitCode).toBe(0);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.comments_trusted).toHaveLength(2);
+
+    const authors = parsed.comments_trusted.map((c: any) => c.author);
+    expect(authors).toContain("garry");
+    expect(authors).toContain("dev-alice");
+    expect(authors).not.toContain("reporter-bob");
+    expect(authors).not.toContain("guest-eve");
+    expect(authors).not.toContain("no-field-user");
+
+    expect(parsed.comments_dropped_count).toBe(3);
+  });
+
+  test("read --comments-trust trusted-only fail-closed on missing access_level", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ia-gl-failclose-"));
+
+    const result = runGlab(["read", "42", "--comments-trust", "trusted-only"], tmpDir);
+    expect(result.exitCode).toBe(0);
+
+    const parsed = JSON.parse(result.stdout);
+    const authors = parsed.comments_trusted.map((c: any) => c.author);
+    expect(authors).not.toContain("no-field-user");
+  });
+
+  test("read --comments-trust all passes all GitLab notes through", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ia-gl-all-"));
+
+    const result = runGlab(["read", "42", "--comments-trust", "all"], tmpDir);
+    expect(result.exitCode).toBe(0);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.comments_trusted).toHaveLength(5);
+    expect(parsed.comments_dropped_count).toBe(0);
+  });
+
+  test("read --comments-trust issue-author-only keeps only issue author on GitLab", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ia-gl-author-"));
+
+    const result = runGlab(["read", "42", "--comments-trust", "issue-author-only"], tmpDir);
+    expect(result.exitCode).toBe(0);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.comments_trusted).toHaveLength(1);
+    expect(parsed.comments_trusted[0].author).toBe("garry");
+    expect(parsed.comments_dropped_count).toBe(4);
   });
 });
