@@ -30,6 +30,30 @@ Each test MUST set a per-test ledger path via environment variable:
 3. The shim **NEVER** defaults to a path inside `test/fixtures/issue-artifacts/`.
    Ledger files are always test-owned temp paths.
 
+### TypeScript usage
+
+```typescript
+import { mkdtempSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+
+const tmpDir = mkdtempSync(join(tmpdir(), "my-test-"));
+const ledger = join(tmpDir, "recorded-calls.jsonl");
+
+const result = Bun.spawnSync({
+  cmd: ["gh", "issue", "view", "42", "--json", "number,title"],
+  env: {
+    ...process.env,
+    STUB_GH_LEDGER: ledger,
+    STUB_GH_SCENARIO: "/path/to/scenario.json",
+  },
+});
+```
+
+The env var names must be used verbatim — `STUB_GH_LEDGER` for `stub-gh`,
+`STUB_GLAB_LEDGER` for `stub-glab`. Scenario files are set via
+`STUB_GH_SCENARIO` / `STUB_GLAB_SCENARIO` respectively.
+
 ## Scenario files
 
 Behavior is driven by a JSON file whose path is set in `STUB_GH_SCENARIO`
@@ -106,6 +130,7 @@ files across the test suite:
 | `read`             | `issue view <number> --json ...`              |
 | `comment`          | `issue comment <number> --body ...`           |
 | `close`            | `issue close <number>`                        |
+| `find`             | `issue list --label <label> --json ...`       |
 | `list-by-label`    | `issue list --label <label> --json ...`       |
 | `validate-url`     | `issue view <number> --json url`              |
 | `handoff`          | `issue comment <number> --body ...` (handoff) |

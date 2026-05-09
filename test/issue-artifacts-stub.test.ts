@@ -23,7 +23,7 @@ describe("stub-shim conformance (AC8)", () => {
   test("STUB-CONTRACT.md exists and documents all subcommands", () => {
     expect(existsSync(CONTRACT)).toBe(true);
     const content = readFileSync(CONTRACT, "utf-8");
-    for (const cmd of ["create", "update", "read", "comment", "close", "list-by-label", "validate-url", "handoff"]) {
+    for (const cmd of ["create", "update", "read", "comment", "close", "find", "list-by-label", "validate-url", "handoff"]) {
       expect(content).toContain(cmd);
     }
   });
@@ -78,7 +78,8 @@ describe("stub-shim conformance (AC8)", () => {
   });
 
   test("stub-gh fails closed when STUB_GH_LEDGER is unset", () => {
-    const fixturesBefore = readdirSync(FIXTURES).sort();
+    const filesBefore = readdirSync(FIXTURES).filter(f => statSync(join(FIXTURES, f)).isFile()).sort();
+    const contentsBefore = new Map(filesBefore.map(f => [f, readFileSync(join(FIXTURES, f))]));
 
     const result = Bun.spawnSync({
       cmd: [STUB_GH, "issue", "view", "42"],
@@ -94,9 +95,12 @@ describe("stub-shim conformance (AC8)", () => {
     expect(stderr).toContain("STUB_GH_LEDGER unset");
     expect(stderr).toContain("refusing to write to a default path");
 
-    // Fixture directory unchanged
-    const fixturesAfter = readdirSync(FIXTURES).sort();
-    expect(fixturesAfter).toEqual(fixturesBefore);
+    // Fixture directory unchanged: same files with same contents
+    const filesAfter = readdirSync(FIXTURES).filter(f => statSync(join(FIXTURES, f)).isFile()).sort();
+    expect(filesAfter).toEqual(filesBefore);
+    for (const f of filesAfter) {
+      expect(readFileSync(join(FIXTURES, f))).toEqual(contentsBefore.get(f));
+    }
   });
 
   test("stub-gh parallel invocations produce isolated ledgers (R14)", async () => {
@@ -116,17 +120,13 @@ describe("stub-shim conformance (AC8)", () => {
       STUB_GH_SCENARIO: SMOKE_SCENARIO,
     };
 
-    const [r1, r2] = await Promise.all([
-      new Promise<ReturnType<typeof Bun.spawnSync>>((resolve) => {
-        resolve(Bun.spawnSync({ cmd: [STUB_GH, "issue", "create", "--title", "test1"], env: env1 }));
-      }),
-      new Promise<ReturnType<typeof Bun.spawnSync>>((resolve) => {
-        resolve(Bun.spawnSync({ cmd: [STUB_GH, "label", "list"], env: env2 }));
-      }),
-    ]);
+    const p1 = Bun.spawn({ cmd: [STUB_GH, "issue", "create", "--title", "test1"], env: env1, stdout: "pipe", stderr: "pipe" });
+    const p2 = Bun.spawn({ cmd: [STUB_GH, "label", "list"], env: env2, stdout: "pipe", stderr: "pipe" });
 
-    expect(r1.exitCode).toBe(0);
-    expect(r2.exitCode).toBe(0);
+    const [exit1, exit2] = await Promise.all([p1.exited, p2.exited]);
+
+    expect(exit1).toBe(0);
+    expect(exit2).toBe(0);
 
     const entries1 = readFileSync(ledger1, "utf-8").trim().split("\n").map(l => JSON.parse(l));
     const entries2 = readFileSync(ledger2, "utf-8").trim().split("\n").map(l => JSON.parse(l));

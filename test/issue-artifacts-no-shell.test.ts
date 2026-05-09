@@ -56,32 +56,62 @@ describe("issue-artifacts-no-shell (AC2)", () => {
     }
   });
 
+  const STUB_DIR = join(ROOT, "test", "fixtures", "issue-artifacts");
+  const SCENARIO = join(STUB_DIR, "scenarios", "foundation-smoke.json");
+
+  function spawnArtifact(tmpDir: string, args: string[]) {
+    return Bun.spawnSync({
+      cmd: ["bun", "run", ARTIFACT_SRC, ...args],
+      env: {
+        ...process.env,
+        PATH: `${STUB_DIR}:${process.env.PATH}`,
+        STUB_GH_LEDGER: join(tmpDir, "ledger.jsonl"),
+        STUB_GH_SCENARIO: SCENARIO,
+      },
+    });
+  }
+
   test("malicious title does not execute via filesystem", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "no-shell-test-"));
     const marker = join(tmpDir, "PWNED");
     const bodyFile = join(tmpDir, "body.md");
     writeFileSync(bodyFile, "test body");
 
-    // Craft a malicious title that would create a file if shell-evaluated
     const maliciousTitle = `$(touch ${marker})`;
 
-    const result = Bun.spawnSync({
-      cmd: [
-        "bun", "run", ARTIFACT_SRC,
-        "create",
-        "--kind", "ceo-plan",
-        "--title", maliciousTitle,
-        "--body-file", bodyFile,
-      ],
-      env: {
-        ...process.env,
-        PATH: `${join(ROOT, "test", "fixtures", "issue-artifacts")}:${process.env.PATH}`,
-        STUB_GH_LEDGER: join(tmpDir, "ledger.jsonl"),
-        STUB_GH_SCENARIO: join(ROOT, "test", "fixtures", "issue-artifacts", "scenarios", "foundation-smoke.json"),
-      },
-    });
+    spawnArtifact(tmpDir, [
+      "create", "--kind", "ceo-plan",
+      "--title", maliciousTitle, "--body-file", bodyFile,
+    ]);
 
-    // The marker file must NOT exist — shell expansion did not happen
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("malicious label does not execute via filesystem", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "no-shell-label-"));
+    const marker = join(tmpDir, "PWNED");
+    const bodyFile = join(tmpDir, "body.md");
+    writeFileSync(bodyFile, "test body");
+
+    const maliciousLabel = `$(touch ${marker})`;
+
+    spawnArtifact(tmpDir, [
+      "create", "--kind", "ceo-plan",
+      "--title", "safe title", "--body-file", bodyFile,
+      "--label", maliciousLabel,
+    ]);
+
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("malicious URL does not execute via filesystem", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "no-shell-url-"));
+    const marker = join(tmpDir, "PWNED");
+
+    const maliciousUrl = `https://example.com/$(touch ${marker})`;
+
+    spawnArtifact(tmpDir, ["validate-url", maliciousUrl]);
+
     expect(existsSync(marker)).toBe(false);
   });
 });
