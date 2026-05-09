@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Stateful stub that returns HTTP 429 (rate limit) for the first N calls,
+# then succeeds. Uses a counter file at $STUB_GH_COUNTER_FILE.
+
+counter_file="${STUB_GH_COUNTER_FILE:-}"
+fail_count="${STUB_GH_FAIL_COUNT:-2}"
+
+if [[ -z "$counter_file" ]]; then
+  echo "[stub-gh-rate-limit] STUB_GH_COUNTER_FILE unset" >&2
+  exit 2
+fi
+
+current=0
+if [[ -f "$counter_file" ]]; then
+  current=$(cat "$counter_file")
+fi
+
+next=$((current + 1))
+echo "$next" > "$counter_file"
+
+if [[ "$current" -lt "$fail_count" ]]; then
+  echo "HTTP 429: rate limit exceeded - secondary rate limit" >&2
+  exit 1
+fi
+
+# Success response: mimic `gh issue view 42 --json ...`
+echo '{"number":42,"title":"Test Issue","body":"body","state":"OPEN","url":"https://github.com/test/repo/issues/42","author":{"login":"dev"},"labels":[],"comments":[]}'
+exit 0
