@@ -1901,3 +1901,44 @@ describe('issue-artifacts foundation (AC11)', () => {
     }
   });
 });
+
+// ── AC2: Producer SKILL.md contains correct --kind and gate sequence ────────
+
+describe('issue-artifacts producer SKILL.md gate sequence (AC2)', () => {
+  const PRODUCER_SKILLS: Array<{ skill: string; kind: string }> = [
+    { skill: 'office-hours', kind: 'gstack:design-doc' },
+    { skill: 'plan-ceo-review', kind: 'gstack:ceo-plan' },
+    { skill: 'plan-eng-review', kind: 'gstack:eng-plan' },
+    { skill: 'plan-design-review', kind: 'gstack:design-plan' },
+    { skill: 'plan-devex-review', kind: 'gstack:devex-plan' },
+    { skill: 'design-consultation', kind: 'gstack:design-doc' },
+    { skill: 'retro', kind: 'gstack:retro' },
+    { skill: 'context-save', kind: 'gstack:context-save' },
+  ];
+
+  for (const { skill, kind } of PRODUCER_SKILLS) {
+    describe(skill, () => {
+      const skillMd = fs.readFileSync(path.join(ROOT, skill, 'SKILL.md'), 'utf-8');
+
+      test(`contains gstack-issue-artifact create --kind ${kind}`, () => {
+        expect(skillMd).toContain(`gstack-issue-artifact create --kind ${kind}`);
+      });
+
+      test('gate sequence: issue_artifacts before issue_tracker before repo-policy before create', () => {
+        const idxIssueArtifacts = skillMd.indexOf('gstack-config get issue_artifacts');
+        const idxIssueTracker = skillMd.indexOf('gstack-config get issue_tracker');
+        const idxRepoPolicy = skillMd.indexOf('gstack-issue-repo-policy check --op write');
+        const idxCreate = skillMd.indexOf('gstack-issue-artifact create');
+
+        expect(idxIssueArtifacts).toBeGreaterThan(-1);
+        expect(idxIssueTracker).toBeGreaterThan(-1);
+        expect(idxRepoPolicy).toBeGreaterThan(-1);
+        expect(idxCreate).toBeGreaterThan(-1);
+
+        expect(idxIssueArtifacts).toBeLessThan(idxIssueTracker);
+        expect(idxIssueTracker).toBeLessThan(idxRepoPolicy);
+        expect(idxRepoPolicy).toBeLessThan(idxCreate);
+      });
+    });
+  }
+});
