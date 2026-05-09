@@ -1,0 +1,639 @@
+#!/usr/bin/env bun
+/**
+ * gstack-issue-artifact — CLI helper for issue-backed artifacts.
+ *
+ * All subprocess invocations use Bun.spawn({ cmd: [...] }) with argv arrays.
+ * Multi-line bodies always go through --body-file <path>, never process substitution.
+ *
+ * Subcommands:
+ *   detect-platform
+ *   create --kind <kind> --title <t> --body-file <path> [--label <l>]...
+ *   update <number-or-url> --body-file <path>
+ *   read <number-or-url> [--comments-trust trusted-only|issue-author-only|all]
+ *   link-local --file <path> --issue <number-or-url>
+ *   list-by-label --label <l> [--state open|closed|all] [--since <iso>]
+ *   validate-url <url>
+ *   comment <number-or-url> --body-file <path>
+ *   close <number-or-url> [--comment-body-file <path>]
+ *   handoff --issue <number-or-url> --kind <kind> [--out <path>]
+ */
+
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { tmpdir } from "os";
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+type Platform = "github" | "gitlab" | "none";
+
+interface NormalizedIssue {
+  url: string;
+  title: string;
+  body: string;
+  state: string;
+  labels: string[];
+  author: string;
+  comments_trusted: Array<{ author: string; body: string; created_at: string; association: string }>;
+  comments_dropped_count: number;
+  comments_dropped_authors: string[];
+}
+
+type CommentsTrust = "trusted-only" | "issue-author-only" | "all";
+type WriteOp = "read" | "write";
+
+const LABEL_COLORS: Record<string, string> = {
+  "gstack:design-doc":      "0366d6",
+  "gstack:ceo-plan":        "0366d6",
+  "gstack:eng-plan":        "0366d6",
+  "gstack:design-plan":     "0366d6",
+  "gstack:devex-plan":      "0366d6",
+  "gstack:retro":           "0366d6",
+  "gstack:context-save":    "0366d6",
+  "gstack:todo":            "0366d6",
+  "gstack:review-finding":  "0366d6",
+  "gstack:p0":              "e11d48",
+  "gstack:p1":              "f97316",
+  "gstack:p2":              "eab308",
+  "gstack:p3":              "9ca3af",
+  "gstack:p4":              "d1d5db",
+  "gstack:effort-s":        "fde047",
+  "gstack:effort-m":        "facc15",
+  "gstack:effort-l":        "ca8a04",
+  "gstack:effort-xl":       "92400e",
+};
+
+const PREFIX = "[issue-artifacts]";
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+const binDir = dirname(process.argv[1]);
+
+function die(msg: string, code = 1): never {
+  process.stderr.write(`${PREFIX} ${msg}\n`);
+  process.exit(code);
+}
+
+function warn(msg: string): void {
+  process.stderr.write(`${PREFIX} WARNING: ${msg}\n`);
+}
+
+function getConfig(key: string): string {
+  const result = Bun.spawnSync({ cmd: [join(binDir, "gstack-config"), "get", key] });
+  return result.stdout.toString().trim();
+}
+
+function checkPolicy(op: WriteOp): { allowed: boolean; policy: string } {
+  const policyBin = join(binDir, "gstack-issue-repo-policy");
+  const result = Bun.spawnSync({ cmd: [policyBin, "check", "--op", op] });
+  const show = Bun.spawnSync({ cmd: [policyBin, "show"] });
+  return { allowed: result.exitCode === 0, policy: show.stdout.toString().trim() };
+}
+
+function requireWritePolicy(): void {
+  const { allowed, policy } = checkPolicy("write");
+  if (!allowed) {
+    process.stderr.write(`${PREFIX} BLOCKED: repo policy = ${policy}\n`);
+    process.exit(0);
+  }
+}
+
+function requireReadPolicy(): void {
+  const { allowed, policy } = checkPolicy("read");
+  if (!allowed) {
+    process.stderr.write(`${PREFIX} BLOCKED: repo policy = ${policy}\n`);
+    process.exit(0);
+  }
+}
+
+function resolve(numberOrUrl: string): string {
+  if (/^https?:\/\//.test(numberOrUrl)) {
+    const match = numberOrUrl.match(/\/(\d+)\/?$/);
+    if (!match) die(`cannot extract issue number from URL: ${numberOrUrl}`);
+    return match![1];
+  }
+  if (/^\d+$/.test(numberOrUrl)) return numberOrUrl;
+  die(`invalid issue reference: ${numberOrUrl}`);
+}
+
+function parseArgs(argv: string[]): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  const positional: string[] = [];
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i];
+    if (arg.startsWith("--")) {
+      const key = arg;
+      const vals = result.get(key) ?? [];
+      if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) {
+        vals.push(argv[i + 1]);
+        i += 2;
+      } else {
+        vals.push("true");
+        i += 1;
+      }
+      result.set(key, vals);
+    } else {
+      positional.push(arg);
+      i += 1;
+    }
+  }
+  if (positional.length > 0) result.set("_positional", positional);
+  return result;
+}
+
+function arg1(args: Map<string, string[]>, key: string): string | undefined {
+  return args.get(key)?.[0];
+}
+
+function argAll(args: Map<string, string[]>, key: string): string[] {
+  return args.get(key) ?? [];
+}
+
+function positional(args: Map<string, string[]>, index = 0): string | undefined {
+  return args.get("_positional")?.[index];
+}
+
+// ── Platform detection ─────────────────────────────────────────────────────
+
+function detectPlatform(): Platform {
+  const result = Bun.spawnSync({ cmd: ["git", "remote", "-v"] });
+  if (result.exitCode !== 0) return "none";
+  const output = result.stdout.toString();
+  if (output.includes("github.com")) return "github";
+  if (output.includes("gitlab")) return "gitlab";
+  return "none";
+}
+
+function requirePlatform(): Platform {
+  const p = detectPlatform();
+  if (p === "none") die("no supported git platform detected (need github.com or gitlab remote)");
+  return p;
+}
+
+function cliBin(platform: Platform): string {
+  return platform === "github" ? "gh" : "glab";
+}
+
+// ── Remote URL parsing ─────────────────────────────────────────────────────
+
+function getCurrentRepoRemote(): string {
+  const result = Bun.spawnSync({ cmd: ["git", "remote", "get-url", "origin"] });
+  if (result.exitCode !== 0) die("cannot read git remote origin");
+  return result.stdout.toString().trim();
+}
+
+function normalizeRepoUrl(url: string): string {
+  let u = url.replace(/^.*:\/\//, "").replace(/^.*@/, "");
+  u = u.replace(":", "/");
+  u = u.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase();
+  return u;
+}
+
+// ── Label management ───────────────────────────────────────────────────────
+
+function ensureLabel(platform: Platform, label: string): void {
+  const bin = cliBin(platform);
+  const check = Bun.spawnSync({ cmd: [bin, "label", "list", "--search", label] });
+  const existing = check.stdout.toString();
+  if (existing.includes(label)) return;
+
+  const color = LABEL_COLORS[label] ?? "0366d6";
+  if (platform === "github") {
+    Bun.spawnSync({ cmd: [bin, "label", "create", label, "--color", color, "--force"] });
+  } else {
+    Bun.spawnSync({ cmd: [bin, "label", "create", label, "--color", `#${color}`] });
+  }
+}
+
+// ── Subcommands ────────────────────────────────────────────────────────────
+
+function cmdDetectPlatform(): void {
+  console.log(detectPlatform());
+}
+
+function cmdCreate(args: Map<string, string[]>): void {
+  requireWritePolicy();
+  const platform = requirePlatform();
+  const bin = cliBin(platform);
+
+  const kind = arg1(args, "--kind");
+  const title = arg1(args, "--title");
+  const bodyFile = arg1(args, "--body-file");
+  const extraLabels = argAll(args, "--label");
+
+  if (!kind) die("--kind is required");
+  if (!title) die("--title is required");
+  if (!bodyFile) die("--body-file is required");
+  if (!existsSync(bodyFile)) die(`body file not found: ${bodyFile}`);
+
+  const kindLabel = `gstack:${kind}`;
+  const allLabels = [kindLabel, ...extraLabels];
+
+  for (const label of allLabels) {
+    ensureLabel(platform, label);
+  }
+
+  const labelArgs: string[] = [];
+  for (const l of allLabels) {
+    labelArgs.push("--label", l);
+  }
+
+  const result = Bun.spawnSync({
+    cmd: [bin, "issue", "create", "--title", title, "--body-file", bodyFile, ...labelArgs],
+  });
+
+  if (result.exitCode !== 0) {
+    die(`issue create failed: ${result.stderr.toString().trim()}`);
+  }
+
+  const output = result.stdout.toString().trim();
+
+  if (platform === "github") {
+    const urlMatch = output.match(/(https:\/\/github\.com\/[^\s]+\/issues\/(\d+))/);
+    if (urlMatch) {
+      console.log(`${urlMatch[1]} ${urlMatch[2]}`);
+      return;
+    }
+  }
+
+  const numMatch = output.match(/\/(\d+)/);
+  if (numMatch) {
+    console.log(`${output.trim()} ${numMatch[1]}`);
+  } else {
+    console.log(output);
+  }
+}
+
+function cmdUpdate(args: Map<string, string[]>): void {
+  requireWritePolicy();
+  const platform = requirePlatform();
+  const bin = cliBin(platform);
+
+  const numberOrUrl = positional(args);
+  const bodyFile = arg1(args, "--body-file");
+
+  if (!numberOrUrl) die("issue number or URL is required");
+  if (!bodyFile) die("--body-file is required");
+  if (!existsSync(bodyFile)) die(`body file not found: ${bodyFile}`);
+
+  const num = resolve(numberOrUrl);
+  const result = Bun.spawnSync({
+    cmd: [bin, "issue", "edit", num, "--body-file", bodyFile],
+  });
+
+  if (result.exitCode !== 0) {
+    die(`issue update failed: ${result.stderr.toString().trim()}`);
+  }
+}
+
+function cmdRead(args: Map<string, string[]>): void {
+  requireReadPolicy();
+  const platform = requirePlatform();
+  const bin = cliBin(platform);
+
+  const numberOrUrl = positional(args);
+  if (!numberOrUrl) die("issue number or URL is required");
+
+  const trustArg = arg1(args, "--comments-trust") as CommentsTrust | undefined;
+  const configTrust = getConfig("issue_comment_trust");
+  const trust: CommentsTrust = trustArg ?? (configTrust as CommentsTrust) ?? "trusted-only";
+
+  if (trust === "all") {
+    warn("comments-trust=all — untrusted comments included in output");
+  }
+
+  const num = resolve(numberOrUrl);
+
+  const issueResult = Bun.spawnSync({
+    cmd: [bin, "issue", "view", num, "--json", "url,title,body,state,labels,author,comments"],
+  });
+
+  if (issueResult.exitCode !== 0) {
+    die(`issue read failed: ${issueResult.stderr.toString().trim()}`);
+  }
+
+  const raw = JSON.parse(issueResult.stdout.toString());
+
+  const issueAuthor: string = raw.author?.login ?? raw.author?.username ?? "";
+  const labels: string[] = (raw.labels ?? []).map((l: any) => l.name ?? l);
+
+  type RawComment = {
+    author: { login?: string; username?: string };
+    body: string;
+    createdAt?: string;
+    created_at?: string;
+    authorAssociation?: string;
+  };
+
+  const allComments: RawComment[] = raw.comments ?? [];
+  const trusted: NormalizedIssue["comments_trusted"] = [];
+  const droppedAuthors = new Set<string>();
+  let droppedCount = 0;
+
+  const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+  for (const c of allComments) {
+    const author = c.author?.login ?? c.author?.username ?? "unknown";
+    const body = c.body ?? "";
+    const createdAt = c.createdAt ?? c.created_at ?? "";
+    const association = c.authorAssociation ?? "";
+
+    let keep = false;
+    switch (trust) {
+      case "all":
+        keep = true;
+        break;
+      case "issue-author-only":
+        keep = author === issueAuthor;
+        break;
+      case "trusted-only":
+        keep = TRUSTED_ASSOCIATIONS.has(association);
+        break;
+    }
+
+    if (keep) {
+      trusted.push({ author, body, created_at: createdAt, association });
+    } else {
+      droppedCount++;
+      droppedAuthors.add(author);
+    }
+  }
+
+  const normalized: NormalizedIssue = {
+    url: raw.url ?? "",
+    title: raw.title ?? "",
+    body: raw.body ?? "",
+    state: (raw.state ?? "").toLowerCase(),
+    labels,
+    author: issueAuthor,
+    comments_trusted: trusted,
+    comments_dropped_count: droppedCount,
+    comments_dropped_authors: [...droppedAuthors],
+  };
+
+  console.log(JSON.stringify(normalized, null, 2));
+}
+
+function cmdLinkLocal(args: Map<string, string[]>): void {
+  const filePath = arg1(args, "--file");
+  const issueRef = arg1(args, "--issue");
+
+  if (!filePath) die("--file is required");
+  if (!issueRef) die("--issue is required");
+
+  let issueUrl = issueRef;
+  if (/^\d+$/.test(issueRef)) {
+    const platform = detectPlatform();
+    if (platform === "none") die("cannot build issue URL without a supported remote");
+    const remote = getCurrentRepoRemote();
+    const normalized = normalizeRepoUrl(remote);
+    issueUrl = `https://${normalized}/issues/${issueRef}`;
+  }
+
+  let content = "";
+  if (existsSync(filePath)) {
+    content = readFileSync(filePath, "utf-8");
+  }
+
+  const FM_OPEN = "---";
+  const hasFrontmatter = content.startsWith(`${FM_OPEN}\n`);
+
+  if (hasFrontmatter) {
+    const endIdx = content.indexOf(`\n${FM_OPEN}\n`, FM_OPEN.length);
+    if (endIdx === -1) die("malformed YAML frontmatter: no closing ---");
+    let fm = content.slice(FM_OPEN.length + 1, endIdx);
+    const body = content.slice(endIdx + FM_OPEN.length + 2);
+
+    fm = fm.replace(/^issue:.*$/m, "").replace(/^issue-state:.*$/m, "");
+    fm = fm.replace(/\n{2,}/g, "\n").trim();
+    if (fm.length > 0) fm += "\n";
+    fm += `issue: ${issueUrl}\nissue-state: open\n`;
+
+    content = `${FM_OPEN}\n${fm}${FM_OPEN}\n${body}`;
+  } else {
+    const fm = `${FM_OPEN}\nissue: ${issueUrl}\nissue-state: open\n${FM_OPEN}\n`;
+    content = fm + content;
+  }
+
+  writeFileSync(filePath, content);
+}
+
+function cmdListByLabel(args: Map<string, string[]>): void {
+  requireReadPolicy();
+  const platform = requirePlatform();
+  const bin = cliBin(platform);
+
+  const label = arg1(args, "--label");
+  const state = arg1(args, "--state") ?? "open";
+  const since = arg1(args, "--since");
+
+  if (!label) die("--label is required");
+
+  const cmd: string[] = [bin, "issue", "list", "--label", label, "--state", state, "--json", "url,title,state,labels,number,createdAt"];
+
+  if (since && platform === "github") {
+    cmd.push("--search", `created:>=${since}`);
+  }
+
+  const result = Bun.spawnSync({ cmd });
+
+  if (result.exitCode !== 0) {
+    die(`list-by-label failed: ${result.stderr.toString().trim()}`);
+  }
+
+  let issues = JSON.parse(result.stdout.toString());
+
+  if (since && platform === "gitlab") {
+    const sinceDate = new Date(since);
+    issues = issues.filter((i: any) => new Date(i.createdAt ?? i.created_at) >= sinceDate);
+  }
+
+  console.log(JSON.stringify(issues, null, 2));
+}
+
+function cmdValidateUrl(args: Map<string, string[]>): void {
+  const url = positional(args);
+  if (!url) die("URL argument is required");
+
+  const remote = getCurrentRepoRemote();
+  const repoNorm = normalizeRepoUrl(remote);
+
+  let urlNorm: string;
+  try {
+    const parsed = new URL(url);
+    urlNorm = normalizeRepoUrl(parsed.origin + parsed.pathname.replace(/\/issues\/\d+$/, ""));
+  } catch {
+    process.stderr.write(`${PREFIX} BLOCKED: cross-repo URL ${url} rejected\n`);
+    process.exit(1);
+  }
+
+  if (urlNorm !== repoNorm) {
+    process.stderr.write(`${PREFIX} BLOCKED: cross-repo URL ${url} rejected\n`);
+    process.exit(1);
+  }
+}
+
+function cmdComment(args: Map<string, string[]>): void {
+  requireWritePolicy();
+  const platform = requirePlatform();
+  const bin = cliBin(platform);
+
+  const numberOrUrl = positional(args);
+  const bodyFile = arg1(args, "--body-file");
+
+  if (!numberOrUrl) die("issue number or URL is required");
+  if (!bodyFile) die("--body-file is required");
+  if (!existsSync(bodyFile)) die(`body file not found: ${bodyFile}`);
+
+  const num = resolve(numberOrUrl);
+  const result = Bun.spawnSync({
+    cmd: [bin, "issue", "comment", num, "--body-file", bodyFile],
+  });
+
+  if (result.exitCode !== 0) {
+    die(`comment failed: ${result.stderr.toString().trim()}`);
+  }
+}
+
+function cmdClose(args: Map<string, string[]>): void {
+  requireWritePolicy();
+  const platform = requirePlatform();
+  const bin = cliBin(platform);
+
+  const numberOrUrl = positional(args);
+  if (!numberOrUrl) die("issue number or URL is required");
+
+  const commentBodyFile = arg1(args, "--comment-body-file");
+  const num = resolve(numberOrUrl);
+
+  if (commentBodyFile) {
+    if (!existsSync(commentBodyFile)) die(`comment body file not found: ${commentBodyFile}`);
+    const commentResult = Bun.spawnSync({
+      cmd: [bin, "issue", "comment", num, "--body-file", commentBodyFile],
+    });
+    if (commentResult.exitCode !== 0) {
+      die(`close-comment failed: ${commentResult.stderr.toString().trim()}`);
+    }
+  }
+
+  const result = Bun.spawnSync({ cmd: [bin, "issue", "close", num] });
+  if (result.exitCode !== 0) {
+    die(`close failed: ${result.stderr.toString().trim()}`);
+  }
+}
+
+function cmdHandoff(args: Map<string, string[]>): void {
+  const issueRef = arg1(args, "--issue");
+  const kind = arg1(args, "--kind");
+  const outPath = arg1(args, "--out");
+
+  if (!issueRef) die("--issue is required");
+  if (!kind) die("--kind is required");
+
+  const platform = detectPlatform();
+  const num = resolve(issueRef);
+
+  const readArgs = new Map<string, string[]>();
+  readArgs.set("_positional", [num]);
+
+  const issueResult = Bun.spawnSync({
+    cmd: [process.argv[1], "read", num],
+  });
+
+  if (issueResult.exitCode !== 0) {
+    die(`handoff read failed: ${issueResult.stderr.toString().trim()}`);
+  }
+
+  const issue = JSON.parse(issueResult.stdout.toString());
+
+  const remote = getCurrentRepoRemote();
+  const repoNorm = normalizeRepoUrl(remote);
+
+  const branchResult = Bun.spawnSync({ cmd: ["git", "rev-parse", "--abbrev-ref", "HEAD"] });
+  const branch = branchResult.stdout.toString().trim();
+
+  const shaResult = Bun.spawnSync({ cmd: ["git", "rev-parse", "HEAD"] });
+  const sha = shaResult.stdout.toString().trim();
+
+  const payload = {
+    kind,
+    platform,
+    repo: repoNorm,
+    branch,
+    sha,
+    issue_number: parseInt(num, 10),
+    issue_url: issue.url,
+    issue_title: issue.title,
+    issue_body: issue.body,
+    issue_state: issue.state,
+    issue_labels: issue.labels,
+    issue_author: issue.author,
+    comments_trusted: issue.comments_trusted,
+  };
+
+  const json = JSON.stringify(payload, null, 2);
+
+  if (outPath) {
+    writeFileSync(outPath, json + "\n");
+  } else {
+    console.log(json);
+  }
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────
+
+const [subcommand, ...rest] = process.argv.slice(2);
+
+if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+  console.log(`Usage: gstack-issue-artifact <subcommand> [options]
+
+Subcommands:
+  detect-platform
+  create --kind <kind> --title <t> --body-file <path> [--label <l>]...
+  update <number-or-url> --body-file <path>
+  read <number-or-url> [--comments-trust trusted-only|issue-author-only|all]
+  link-local --file <path> --issue <number-or-url>
+  list-by-label --label <l> [--state open|closed|all] [--since <iso>]
+  validate-url <url>
+  comment <number-or-url> --body-file <path>
+  close <number-or-url> [--comment-body-file <path>]
+  handoff --issue <number-or-url> --kind <kind> [--out <path>]`);
+  process.exit(0);
+}
+
+const args = parseArgs(rest);
+
+switch (subcommand) {
+  case "detect-platform":
+    cmdDetectPlatform();
+    break;
+  case "create":
+    cmdCreate(args);
+    break;
+  case "update":
+    cmdUpdate(args);
+    break;
+  case "read":
+    cmdRead(args);
+    break;
+  case "link-local":
+    cmdLinkLocal(args);
+    break;
+  case "list-by-label":
+    cmdListByLabel(args);
+    break;
+  case "validate-url":
+    cmdValidateUrl(args);
+    break;
+  case "comment":
+    cmdComment(args);
+    break;
+  case "close":
+    cmdClose(args);
+    break;
+  case "handoff":
+    cmdHandoff(args);
+    break;
+  default:
+    die(`unknown subcommand: ${subcommand}`);
+}

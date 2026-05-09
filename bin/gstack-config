@@ -85,6 +85,28 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 #                           # Non-Conductor users can point this at any directory
 #                           # that holds parallel worktrees of the same repo.
 #
+# ─── Issue-backed artifacts ─────────────────────────────────────────
+# issue_artifacts: mirror   # off | mirror | issue-first
+#                           #   off         — disable issue-backed artifacts entirely
+#                           #   mirror      — sync local artifacts to/from issues (default)
+#                           #   issue-first — issue is the source of truth
+#
+# issue_tracker: auto       # auto | github | gitlab | none
+#                           #   auto — detect from git remote (default)
+#
+# issue_repo_policy: inherit-gbrain
+#                           # inherit-gbrain | read-write | read-only | deny
+#                           #   inherit-gbrain — use gbrain repo policy (default)
+#                           #   read-write     — allow all issue operations
+#                           #   read-only      — block writes, allow reads
+#                           #   deny           — block all issue operations
+#
+# issue_comment_trust: trusted-only
+#                           # trusted-only | issue-author-only | all
+#                           #   trusted-only     — OWNER/MEMBER/COLLABORATOR only (default)
+#                           #   issue-author-only — only the issue author
+#                           #   all              — keep all comments (WARNING emitted)
+#
 '
 
 # DEFAULTS table — canonical default values for known keys.
@@ -107,6 +129,10 @@ lookup_default() {
     cross_project_learnings) echo "" ;; # intentionally empty → unset triggers first-time prompt
     artifacts_sync_mode) echo "off" ;;
     artifacts_sync_mode_prompted) echo "false" ;;
+    issue_artifacts) echo "mirror" ;;
+    issue_tracker) echo "auto" ;;
+    issue_repo_policy) echo "inherit-gbrain" ;;
+    issue_comment_trust) echo "trusted-only" ;;
     *) echo "" ;;
   esac
 }
@@ -142,6 +168,22 @@ case "${1:-}" in
       echo "Warning: artifacts_sync_mode '$VALUE' not recognized. Valid values: off, artifacts-only, full. Using off." >&2
       VALUE="off"
     fi
+    if [ "$KEY" = "issue_artifacts" ] && [ "$VALUE" != "off" ] && [ "$VALUE" != "mirror" ] && [ "$VALUE" != "issue-first" ]; then
+      echo "Warning: issue_artifacts '$VALUE' not recognized. Valid values: off, mirror, issue-first. Using mirror." >&2
+      VALUE="mirror"
+    fi
+    if [ "$KEY" = "issue_tracker" ] && [ "$VALUE" != "auto" ] && [ "$VALUE" != "github" ] && [ "$VALUE" != "gitlab" ] && [ "$VALUE" != "none" ]; then
+      echo "Warning: issue_tracker '$VALUE' not recognized. Valid values: auto, github, gitlab, none. Using auto." >&2
+      VALUE="auto"
+    fi
+    if [ "$KEY" = "issue_repo_policy" ] && [ "$VALUE" != "inherit-gbrain" ] && [ "$VALUE" != "read-write" ] && [ "$VALUE" != "read-only" ] && [ "$VALUE" != "deny" ]; then
+      echo "Warning: issue_repo_policy '$VALUE' not recognized. Valid values: inherit-gbrain, read-write, read-only, deny. Using inherit-gbrain." >&2
+      VALUE="inherit-gbrain"
+    fi
+    if [ "$KEY" = "issue_comment_trust" ] && [ "$VALUE" != "trusted-only" ] && [ "$VALUE" != "issue-author-only" ] && [ "$VALUE" != "all" ]; then
+      echo "Warning: issue_comment_trust '$VALUE' not recognized. Valid values: trusted-only, issue-author-only, all. Using trusted-only." >&2
+      VALUE="trusted-only"
+    fi
     mkdir -p "$STATE_DIR"
     # Write annotated header on first creation
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -171,7 +213,8 @@ case "${1:-}" in
     for KEY in proactive routing_declined telemetry auto_upgrade update_check \
                skill_prefix checkpoint_mode checkpoint_push codex_reviews \
                gstack_contributor skip_eng_review workspace_root \
-               artifacts_sync_mode artifacts_sync_mode_prompted; do
+               artifacts_sync_mode artifacts_sync_mode_prompted \
+               issue_artifacts issue_tracker issue_repo_policy issue_comment_trust; do
       VALUE=$(grep -E "^${KEY}:" "$CONFIG_FILE" 2>/dev/null | tail -1 | awk '{print $2}' | tr -d '[:space:]' || true)
       SOURCE="default"
       if [ -n "$VALUE" ]; then
@@ -187,7 +230,8 @@ case "${1:-}" in
     for KEY in proactive routing_declined telemetry auto_upgrade update_check \
                skill_prefix checkpoint_mode checkpoint_push codex_reviews \
                gstack_contributor skip_eng_review workspace_root \
-               artifacts_sync_mode artifacts_sync_mode_prompted; do
+               artifacts_sync_mode artifacts_sync_mode_prompted \
+               issue_artifacts issue_tracker issue_repo_policy issue_comment_trust; do
       printf '  %-24s %s\n' "$KEY:" "$(lookup_default "$KEY")"
     done
     ;;

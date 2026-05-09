@@ -1,0 +1,89 @@
+#!/usr/bin/env bun
+/**
+ * gstack-issue-repo-policy — resolve effective issue repo policy.
+ *
+ * Subcommands:
+ *   show [<remote-url>]          — print effective policy (read-write | read-only | deny)
+ *   check --op <read|write>      — exit 0 if allowed, non-zero otherwise
+ */
+
+import { join, dirname } from "path";
+
+type Policy = "read-write" | "read-only" | "deny";
+type Op = "read" | "write";
+
+const BIN_DIR = dirname(process.argv[1]);
+
+function getConfig(key: string): string {
+  const result = Bun.spawnSync({ cmd: [join(BIN_DIR, "gstack-config"), "get", key] });
+  return result.stdout.toString().trim();
+}
+
+function getRemoteUrl(): string {
+  const result = Bun.spawnSync({ cmd: ["git", "remote", "-v"] });
+  const out = result.stdout.toString();
+  const match = out.match(/^origin\s+(\S+)/m);
+  return match?.[1] ?? "";
+}
+
+function resolvePolicy(remoteUrl?: string): Policy {
+  const configured = getConfig("issue_repo_policy");
+
+  if (configured && configured !== "inherit-gbrain") {
+    if (configured === "read-write" || configured === "read-only" || configured === "deny") {
+      return configured;
+    }
+    return "read-write";
+  }
+
+  const remote = remoteUrl || getRemoteUrl();
+  const gbPolicy = join(BIN_DIR, "gstack-gbrain-repo-policy");
+  const result = Bun.spawnSync({ cmd: [gbPolicy, "show", remote] });
+
+  if (result.exitCode === 0) {
+    const val = result.stdout.toString().trim();
+    if (val === "read-write" || val === "read-only" || val === "deny") {
+      return val;
+    }
+  }
+
+  return "read-write";
+}
+
+function isAllowed(policy: Policy, op: Op): boolean {
+  if (policy === "deny") return false;
+  if (policy === "read-only" && op === "write") return false;
+  return true;
+}
+
+// ── CLI ────────────────────────────────────────────────────────────────────
+
+const [subcmd, ...rest] = process.argv.slice(2);
+
+switch (subcmd) {
+  case "show": {
+    const remoteUrl = rest[0];
+    console.log(resolvePolicy(remoteUrl));
+    break;
+  }
+  case "check": {
+    let op: Op | undefined;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--op" && rest[i + 1]) {
+        op = rest[i + 1] as Op;
+      }
+    }
+    if (!op || (op !== "read" && op !== "write")) {
+      console.error("Usage: gstack-issue-repo-policy check --op <read|write>");
+      process.exit(1);
+    }
+    const policy = resolvePolicy();
+    if (!isAllowed(policy, op)) {
+      process.exit(1);
+    }
+    break;
+  }
+  default:
+    console.error("Usage: gstack-issue-repo-policy {show|check} [options]");
+    process.exit(1);
+}
