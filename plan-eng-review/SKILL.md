@@ -1,5 +1,5 @@
 ---
-name: plan-eng-review
+name: gstack-plan-eng-review
 preamble-tier: 3
 interactive: true
 version: 1.0.0
@@ -1642,7 +1642,7 @@ if [[ "$PLATFORM" == "none" ]]; then
 fi
 
 POLICY_STATE=$(~/.claude/skills/gstack/bin/gstack-issue-repo-policy check --op write 2>&1) || {
-  echo "[issue-artifacts] BLOCKED: repo policy = $POLICY_STATE"
+  echo "[issue-artifacts] BLOCKED: repo policy = $(echo "$POLICY_STATE" | head -1)"
   exit 0
 }
 

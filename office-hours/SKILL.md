@@ -1,5 +1,5 @@
 ---
-name: office-hours
+name: gstack-office-hours
 preamble-tier: 3
 version: 2.0.0
 description: |
@@ -1786,7 +1786,7 @@ if [[ "$PLATFORM" == "none" ]]; then
 fi
 
 POLICY_STATE=$(~/.claude/skills/gstack/bin/gstack-issue-repo-policy check --op write 2>&1) || {
-  echo "[issue-artifacts] BLOCKED: repo policy = $POLICY_STATE"
+  echo "[issue-artifacts] BLOCKED: repo policy = $(echo "$POLICY_STATE" | head -1)"
   exit 0
 }
 

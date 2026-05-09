@@ -49,7 +49,7 @@ export function generateIssueArtifactsBlock(ctx: TemplateContext): string {
     `fi`,
     ``,
     `POLICY_STATE=$(${bin}/gstack-issue-repo-policy check --op write 2>&1) || {`,
-    `  echo "[issue-artifacts] BLOCKED: repo policy = $POLICY_STATE"`,
+    `  echo "[issue-artifacts] BLOCKED: repo policy = $(echo "$POLICY_STATE" | head -1)"`,
     `  exit 0`,
     `}`,
     ``,
