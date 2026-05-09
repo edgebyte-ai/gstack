@@ -402,6 +402,15 @@ describe("gstack-issue-artifact (GitLab)", () => {
       e.argv.includes("label") && e.argv.includes("list") && e.argv.includes("--output") && e.argv.includes("json")
     );
     expect(labelListCalls.length).toBeGreaterThan(0);
+
+    const labelCreateCalls = result.ledger.filter(e =>
+      e.argv.includes("label") && e.argv.includes("create")
+    );
+    expect(labelCreateCalls.length).toBeGreaterThan(0);
+    for (const call of labelCreateCalls) {
+      expect(call.argv).toContain("--name");
+      expect(call.argv.indexOf("--color")).toBeGreaterThan(call.argv.indexOf("--name"));
+    }
   });
 
   test("validate-url accepts same-repo GitLab URL with /-/issues/ (F16)", () => {
