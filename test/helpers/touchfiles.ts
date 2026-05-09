@@ -332,6 +332,16 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
   'fanout-arm-overlay-off':
     ['model-overlays/claude.md', 'model-overlays/opus-4-7.md', 'scripts/models.ts', 'scripts/resolvers/model-overlay.ts'],
 
+  // Issue artifacts (free unit tests — registered here so diff-based selection
+  // notices changes to the issue-artifact surfaces)
+  'issue-artifact-smoke':        ['bin/gstack-issue-artifact', 'test/issue-artifacts.test.ts', 'test/fixtures/issue-artifacts/**'],
+  'issue-artifact-gitlab-trust': ['bin/gstack-issue-artifact', 'test/issue-artifacts.test.ts', 'test/fixtures/issue-artifacts/**'],
+  'issue-artifact-retry':        ['bin/gstack-issue-artifact', 'test/issue-artifacts-retry.test.ts', 'test/fixtures/issue-artifacts/**'],
+  'issue-artifact-no-shell':     ['bin/gstack-issue-artifact', 'test/issue-artifacts-no-shell.test.ts', 'test/fixtures/issue-artifacts/**'],
+  'issue-artifact-stub':         ['bin/gstack-issue-artifact', 'test/issue-artifacts-stub.test.ts', 'test/fixtures/issue-artifacts/**'],
+  'issue-repo-policy':           ['bin/gstack-issue-repo-policy', 'test/issue-repo-policy.test.ts'],
+  'issue-artifact-resolver':     ['scripts/resolvers/issue-artifacts.ts', 'bin/gstack-issue-artifact', 'bin/gstack-issue-repo-policy'],
+
   // Overlay efficacy harness (SDK) — measures whether overlay nudges change
   // behavior under @anthropic-ai/claude-agent-sdk (closer to real Claude Code
   // than `claude -p`). testNames in the file are template literals so the
@@ -602,6 +612,15 @@ export const E2E_TIERS: Record<string, 'gate' | 'periodic'> = {
   // Opus 4.7 overlay evals — periodic (non-deterministic LLM behavior + Opus cost)
   'fanout-arm-overlay-on': 'periodic',
   'fanout-arm-overlay-off': 'periodic',
+
+  // Issue artifacts (free unit tests — gate because trust boundary is security-critical)
+  'issue-artifact-smoke': 'gate',
+  'issue-artifact-gitlab-trust': 'gate',
+  'issue-artifact-retry': 'gate',
+  'issue-artifact-no-shell': 'gate',
+  'issue-artifact-stub': 'gate',
+  'issue-repo-policy': 'gate',
+  'issue-artifact-resolver': 'gate',
 
   // Overlay efficacy harness (SDK, paid) — periodic only
   'overlay-harness-opus-4-7-fanout-toy': 'periodic',

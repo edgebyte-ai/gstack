@@ -40,6 +40,28 @@ describe("stub-shim conformance (AC8)", () => {
     expect(content.toLowerCase()).toMatch(/must not patch|never.*patch|forbid.*patch|scenario.*only/i);
   });
 
+  test("contract includes exact canonical TypeScript usage block", () => {
+    const content = readFileSync(CONTRACT, "utf-8");
+    const canonical = [
+      'import { mkdtempSync } from "fs";',
+      'import { join } from "path";',
+      'import { tmpdir } from "os";',
+      "",
+      'const tmpDir = mkdtempSync(join(tmpdir(), "my-test-"));',
+      'const ledger = join(tmpDir, "recorded-calls.jsonl");',
+      "",
+      "const result = Bun.spawnSync({",
+      '  cmd: ["gh", "issue", "view", "42", "--json", "number,title"],',
+      "  env: {",
+      "    ...process.env,",
+      "    STUB_GH_LEDGER: ledger,",
+      '    STUB_GH_SCENARIO: "/path/to/scenario.json",',
+      "  },",
+      "});",
+    ].join("\n");
+    expect(content).toContain(canonical);
+  });
+
   test("at least one scenario file exists", () => {
     expect(existsSync(SMOKE_SCENARIO)).toBe(true);
     const scenarios = JSON.parse(readFileSync(SMOKE_SCENARIO, "utf-8"));
@@ -78,7 +100,18 @@ describe("stub-shim conformance (AC8)", () => {
   });
 
   test("stub-gh fails closed when STUB_GH_LEDGER is unset", () => {
-    const filesBefore = readdirSync(FIXTURES).filter(f => statSync(join(FIXTURES, f)).isFile()).sort();
+    function walkFiles(dir: string, prefix = ""): string[] {
+      const entries = readdirSync(dir, { withFileTypes: true });
+      const files: string[] = [];
+      for (const e of entries) {
+        const rel = prefix ? `${prefix}/${e.name}` : e.name;
+        if (e.isDirectory()) files.push(...walkFiles(join(dir, e.name), rel));
+        else if (e.isFile()) files.push(rel);
+      }
+      return files;
+    }
+
+    const filesBefore = walkFiles(FIXTURES).sort();
     const contentsBefore = new Map(filesBefore.map(f => [f, readFileSync(join(FIXTURES, f))]));
 
     const result = Bun.spawnSync({
@@ -95,8 +128,8 @@ describe("stub-shim conformance (AC8)", () => {
     expect(stderr).toContain("STUB_GH_LEDGER unset");
     expect(stderr).toContain("refusing to write to a default path");
 
-    // Fixture directory unchanged: same files with same contents
-    const filesAfter = readdirSync(FIXTURES).filter(f => statSync(join(FIXTURES, f)).isFile()).sort();
+    // Fixture directory unchanged: same files with same contents (recursive)
+    const filesAfter = walkFiles(FIXTURES).sort();
     expect(filesAfter).toEqual(filesBefore);
     for (const f of filesAfter) {
       expect(readFileSync(join(FIXTURES, f))).toEqual(contentsBefore.get(f));
