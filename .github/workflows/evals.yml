@@ -94,6 +94,8 @@ jobs:
             file: test/codex-e2e.test.ts
           - name: e2e-gemini
             file: test/gemini-e2e.test.ts
+          - name: e2e-issue-artifacts
+            file: test/skill-e2e-issue-artifacts.test.ts
     steps:
       - uses: actions/checkout@v4
         with:

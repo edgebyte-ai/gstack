@@ -16,13 +16,23 @@
  * isolation via mkdtempSync, custom stub binaries for gstack-config,
  * gstack-issue-artifact, and gstack-issue-repo-policy.
  */
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { generateIssueArtifactsBlock } from '../scripts/resolvers/issue-artifacts';
 import type { TemplateContext, HostPaths } from '../scripts/resolvers/types';
 import { marked } from 'marked';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, rmSync } from 'fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, rmSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { spawnSync } from 'child_process';
+import { runSkillTest } from './helpers/session-runner';
+import {
+  ROOT, runId, evalsEnabled,
+  describeIfSelected, testConcurrentIfSelected,
+  logCost, recordE2E,
+  createEvalCollector, finalizeEvalCollector,
+} from './helpers/e2e-helpers';
+
+const evalCollector = createEvalCollector('e2e-issue-artifacts');
 
 const MOCK_PATHS: HostPaths = {
   skillRoot: '~/.claude/skills/gstack',
@@ -503,3 +513,153 @@ exit 1
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 3. Paid E2E: /office-hours builder mode exercises issue-artifacts via stub
+// ---------------------------------------------------------------------------
+// The SKILL.md uses hardcoded ~/.claude/skills/gstack/bin/ paths for all
+// gstack binaries. We create a modified SKILL.md copy that rewrites those
+// paths to use bare command names, then prepend our stub directory to PATH.
+// This way the agent's bash blocks resolve stubs from PATH instead of the
+// real install location.
+
+function rewriteSkillPaths(skillMd: string): string {
+  return skillMd
+    .replace(/~\/\.claude\/skills\/gstack\/bin\//g, '')
+    .replace(/\.claude\/skills\/gstack\/bin\//g, '');
+}
+
+function writeNoopStub(binDir: string, name: string) {
+  const script = `#!/usr/bin/env bash\nexit 0\n`;
+  const p = join(binDir, name);
+  writeFileSync(p, script);
+  chmodSync(p, 0o755);
+}
+
+describeIfSelected('AC4: paid E2E /office-hours builder + issue-artifacts', ['issue-artifact-e2e'], () => {
+  let workDir: string;
+  let binDir: string;
+  let ledger: string;
+
+  beforeAll(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'e2e-issue-artifact-oh-'));
+    const run = (cmd: string, args: string[]) =>
+      spawnSync(cmd, args, { cwd: workDir, stdio: 'pipe', timeout: 5000 });
+
+    run('git', ['init', '-b', 'main']);
+    run('git', ['config', 'user.email', 'test@test.com']);
+    run('git', ['config', 'user.name', 'Test']);
+
+    // Stub bin directory prepended to PATH
+    binDir = join(workDir, 'stub-bin');
+    mkdirSync(binDir, { recursive: true });
+    ledger = join(workDir, 'e2e-ledger.jsonl');
+
+    // Issue-artifacts stubs (happy path)
+    writeConfigStub(binDir, {
+      issue_artifacts: 'on',
+      issue_tracker: 'github',
+      proactive: 'true',
+      skill_prefix: 'false',
+      telemetry: 'off',
+      explain_level: 'default',
+      question_tuning: 'false',
+      routing_declined: 'false',
+      checkpoint_mode: 'explicit',
+      checkpoint_push: 'false',
+      cross_project_learnings: 'false',
+    });
+    writeArtifactStub(binDir, {
+      'detect-platform': { stdout: 'github', exit: 0 },
+      create: { stdout: 'https://github.com/test/repo/issues/101', exit: 0 },
+      'link-local': { stdout: 'ok', exit: 0 },
+    });
+    writePolicyStub(binDir, { stdout: 'allowed', exit: 0 });
+
+    // Noop stubs for the many other gstack binaries referenced in SKILL.md
+    const noopBins = [
+      'gstack-update-check', 'gstack-repo-mode', 'gstack-telemetry-log',
+      'gstack-slug', 'gstack-learnings-search', 'gstack-timeline-log',
+      'gstack-question-preference', 'gstack-question-log', 'gstack-learnings-log',
+      'gstack-brain-sync', 'gstack-builder-profile', 'gstack-paths',
+      'gstack-review-read', 'gstack-team-init',
+    ];
+    for (const name of noopBins) writeNoopStub(binDir, name);
+
+    // Rewritten SKILL.md: bare command names instead of absolute paths
+    const rawSkill = readFileSync(join(ROOT, 'office-hours', 'SKILL.md'), 'utf-8');
+    const rewritten = rewriteSkillPaths(rawSkill);
+    mkdirSync(join(workDir, 'office-hours'), { recursive: true });
+    writeFileSync(join(workDir, 'office-hours', 'SKILL.md'), rewritten);
+
+    // Builder-idea fixture
+    const idea = readFileSync(
+      join(ROOT, 'test', 'fixtures', 'mode-posture', 'builder-idea.md'),
+      'utf-8',
+    );
+    writeFileSync(join(workDir, 'idea.md'), idea);
+
+    run('git', ['add', '.']);
+    run('git', ['commit', '-m', 'scaffold']);
+  });
+
+  afterAll(() => {
+    try { rmSync(workDir, { recursive: true, force: true }); } catch {}
+  });
+
+  testConcurrentIfSelected('issue-artifact-e2e', async () => {
+    const result = await runSkillTest({
+      prompt: `Read office-hours/SKILL.md for the workflow.
+
+Read idea.md — that's the user's weekend project idea. Select Builder Mode (Phase 2B). Skip any AskUserQuestion — this is non-interactive. Auto-decide all questions with the recommended default.
+
+The user confirmed the basic idea is "TypeScript + D3 web tool for dependency graph visualization." They want a design doc.
+
+Write a short design document (3-5 paragraphs) to ${workDir}/design-doc.md with YAML frontmatter (title: "Dependency Graph Visualizer"). After writing the design doc, execute the issue-artifacts bash block from the SKILL.md. Set ISSUE_ARTIFACT_PATH="${workDir}/design-doc.md" and ISSUE_ARTIFACT_TITLE="Dependency Graph Visualizer" before running the block.
+
+Do NOT create any GitHub issues for real — the gstack binaries in your PATH are stubs. Just run the bash block and let the stubs handle the rest.`,
+      workingDirectory: workDir,
+      maxTurns: 12,
+      timeout: 300_000,
+      testName: 'issue-artifact-e2e',
+      runId,
+      model: 'claude-sonnet-4-6',
+      env: {
+        PATH: `${binDir}:${process.env.PATH}`,
+        STUB_GH_LEDGER: ledger,
+      },
+    });
+
+    logCost('/office-hours (ISSUE-ARTIFACTS E2E)', result);
+    recordE2E(evalCollector, '/office-hours-issue-artifacts-e2e', 'Office Hours Issue Artifacts E2E', result, {
+      passed: ['success', 'error_max_turns'].includes(result.exitReason),
+    });
+    expect(['success', 'error_max_turns']).toContain(result.exitReason);
+
+    // Verify the design doc was written
+    const docPath = join(workDir, 'design-doc.md');
+    expect(existsSync(docPath)).toBe(true);
+    const docContent = readFileSync(docPath, 'utf-8');
+    expect(docContent.length).toBeGreaterThan(50);
+
+    // Verify the ledger was populated (stubs were called)
+    const entries = readLedger(ledger);
+    const artifactCalls = entries.filter(e => e.bin === 'gstack-issue-artifact');
+    expect(artifactCalls.length).toBeGreaterThanOrEqual(1);
+
+    // If link-local was called, verify the frontmatter stamp
+    const linkEntry = entries.find(
+      e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'link-local',
+    );
+    if (linkEntry) {
+      const stamped = readFileSync(docPath, 'utf-8');
+      expect(stamped).toContain('issue:');
+      expect(stamped).toContain('issue-state: open');
+    }
+  }, 360_000);
+});
+
+// Finalize eval collector
+if (evalsEnabled) {
+  finalizeEvalCollector(evalCollector);
+}
