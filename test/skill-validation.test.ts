@@ -1863,3 +1863,41 @@ describe('Bundled browser-skills frontmatter contract', () => {
     }
   });
 });
+
+// ── AC11: Issue-artifacts foundation binaries + resolver ────────────────
+
+describe('issue-artifacts foundation (AC11)', () => {
+  const ARTIFACT_BIN = path.join(ROOT, 'bin', 'gstack-issue-artifact');
+  const POLICY_BIN = path.join(ROOT, 'bin', 'gstack-issue-repo-policy');
+
+  test('bin/gstack-issue-artifact exists and is executable', () => {
+    expect(fs.existsSync(ARTIFACT_BIN)).toBe(true);
+    const stat = fs.statSync(ARTIFACT_BIN);
+    expect(stat.mode & 0o111).toBeGreaterThan(0);
+  });
+
+  test('bin/gstack-issue-repo-policy exists and is executable', () => {
+    expect(fs.existsSync(POLICY_BIN)).toBe(true);
+    const stat = fs.statSync(POLICY_BIN);
+    expect(stat.mode & 0o111).toBeGreaterThan(0);
+  });
+
+  test('issue-artifacts resolver is registered in index.ts', () => {
+    const indexSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'resolvers', 'index.ts'), 'utf-8');
+    expect(indexSrc).toContain('ISSUE_ARTIFACTS_BLOCK');
+    expect(indexSrc).toContain('ISSUE_ARTIFACTS_DISCOVER');
+    expect(indexSrc).toContain('issue-artifacts');
+  });
+
+  test('canonical label list in resolver matches documented set', () => {
+    const resolverSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'resolvers', 'issue-artifacts.ts'), 'utf-8');
+    const expectedLabels = [
+      'gstack:design-doc', 'gstack:ceo-plan', 'gstack:eng-plan',
+      'gstack:design-plan', 'gstack:devex-plan', 'gstack:retro',
+      'gstack:context-save', 'gstack:todo', 'gstack:review-finding',
+    ];
+    for (const label of expectedLabels) {
+      expect(resolverSrc).toContain(label);
+    }
+  });
+});

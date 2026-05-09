@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIN_NAME="glab"
+LEDGER_VAR="STUB_GLAB_LEDGER"
+SCENARIO_VAR="STUB_GLAB_SCENARIO"
+
+ledger="${!LEDGER_VAR:-}"
+if [[ -z "$ledger" ]]; then
+  echo "[stub-glab] STUB_GLAB_LEDGER unset; refusing to write to a default path. Set STUB_GLAB_LEDGER=\$tmpDir/recorded-calls.jsonl from your test." >&2
+  exit 2
+fi
+
+scenario="${!SCENARIO_VAR:-}"
+if [[ -z "$scenario" || ! -f "$scenario" ]]; then
+  echo "[stub-glab] no scenario file" >&2
+  exit 1
+fi
+
+argv_json=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+
+match_result=$(jq -c --argjson argv "$argv_json" '
+  to_entries | map(
+    select(
+      .value.match.argv_contains | all(. as $needle | $argv | any(. == $needle))
+    )
+  ) | first // empty
+' "$scenario" 2>/dev/null || true)
+
+ts=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+
+if [[ -z "$match_result" ]]; then
+  jq -nc \
+    --arg ts "$ts" \
+    --arg bin "$BIN_NAME" \
+    --argjson argv "$argv_json" \
+    --arg scenario "$scenario" \
+    '{ts:$ts, bin:$bin, argv:$argv, stdin_sha256:null, scenario:$scenario, scenario_match_index:-1, response_code:1}' \
+    >> "$ledger"
+  echo "[stub-glab] no scenario match for: $*" >&2
+  exit 1
+fi
+
+match_index=$(echo "$match_result" | jq -r '.key')
+response=$(echo "$match_result" | jq -r '.value.response')
+exit_code=$(echo "$response" | jq -r '.exitCode // 0')
+resp_stdout=$(echo "$response" | jq -r '.stdout // ""')
+resp_stderr=$(echo "$response" | jq -r '.stderr // ""')
+
+jq -nc \
+  --arg ts "$ts" \
+  --arg bin "$BIN_NAME" \
+  --argjson argv "$argv_json" \
+  --arg scenario "$scenario" \
+  --argjson idx "$match_index" \
+  --argjson code "$exit_code" \
+  '{ts:$ts, bin:$bin, argv:$argv, stdin_sha256:null, scenario:$scenario, scenario_match_index:$idx, response_code:$code}' \
+  >> "$ledger"
+
+if [[ -n "$resp_stdout" ]]; then
+  echo "$resp_stdout"
+fi
+if [[ -n "$resp_stderr" ]]; then
+  echo "$resp_stderr" >&2
+fi
+exit "$exit_code"
