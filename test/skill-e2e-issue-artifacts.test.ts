@@ -125,6 +125,44 @@ function writeArtifactStub(
   const dp = opts['detect-platform'];
   const cr = opts.create;
   const ll = opts['link-local'];
+  // When link-local succeeds, the stub mutates the artifact file to stamp
+  // `issue:` and `issue-state: open` into its YAML frontmatter, mirroring
+  // what the real bin/gstack-issue-artifact does. This lets AC4 assertions
+  // re-read the file and verify the stamp end-to-end.
+  const linkLocalBody = ll.exit === 0
+    ? `
+    _FILE=""; _ISSUE=""
+    shift
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --file)  _FILE="$2"; shift 2 ;;
+        --issue) _ISSUE="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [[ -n "$_FILE" && -f "$_FILE" && -n "$_ISSUE" ]]; then
+      _CONTENT=$(cat "$_FILE")
+      if [[ "$_CONTENT" == ---* ]]; then
+        _END=$(echo "$_CONTENT" | tail -n +2 | grep -n '^---$' | head -1 | cut -d: -f1)
+        _END=$((_END + 1))
+        _HEAD=$(echo "$_CONTENT" | head -n "$_END" | grep -v '^issue:' | grep -v '^issue-state:')
+        _TAIL=$(echo "$_CONTENT" | tail -n +"$((_END + 1))")
+        _FM_BODY=$(echo "$_HEAD" | tail -n +2 | head -n "$((_END - 2))")
+        printf '%s\\n' "---" > "$_FILE"
+        [[ -n "$_FM_BODY" ]] && printf '%s\\n' "$_FM_BODY" >> "$_FILE"
+        printf 'issue: %s\\n' "$_ISSUE" >> "$_FILE"
+        printf 'issue-state: open\\n' >> "$_FILE"
+        printf '%s\\n' "---" >> "$_FILE"
+        [[ -n "$_TAIL" ]] && printf '%s\\n' "$_TAIL" >> "$_FILE"
+      fi
+    fi
+    echo "${ll.stdout}"
+    exit 0`
+    : `
+    ${ll.stderr ? `echo "${ll.stderr}" >&2` : ':'}
+    echo "${ll.stdout}"
+    exit ${ll.exit}`;
+
   const script = `#!/usr/bin/env bash
 set -uo pipefail
 _BIN="gstack-issue-artifact"
@@ -143,9 +181,7 @@ case "\$1" in
     ;;
   link-local)
     _ledger ${ll.exit} "$@"
-    ${ll.stderr ? `echo "${ll.stderr}" >&2` : ':'}
-    echo "${ll.stdout}"
-    exit ${ll.exit}
+    ${linkLocalBody}
     ;;
   *) _ledger 1 "$@"; echo "unknown: \$1" >&2; exit 1 ;;
 esac
@@ -245,6 +281,11 @@ describe('AC4: frontmatter stamping E2E', () => {
       expect(linkEntry!.argv).toContain(artifactPath);
       expect(linkEntry!.argv).toContain('--issue');
       expect(linkEntry!.argv).toContain('https://github.com/test/repo/issues/42');
+
+      // AC4: re-read the local file and confirm frontmatter stamp
+      const stamped = readFileSync(artifactPath, 'utf-8');
+      expect(stamped).toMatch(/\nissue: https:\/\/github\.com\/test\/repo\/issues\/42\n/);
+      expect(stamped).toMatch(/\nissue-state: open\n/);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
