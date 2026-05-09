@@ -2067,6 +2067,54 @@ already knows. A good test: would this insight save time in a future session? If
 
 
 
+### Publish to issue tracker
+
+Set the artifact path and title from the CEO plan just written, then publish:
+
+```bash
+ISSUE_ARTIFACT_PATH="$HOME/.gstack/projects/$SLUG/ceo-plans/$DATE-$FEATURE_SLUG.md"
+ISSUE_ARTIFACT_TITLE="CEO plan: $FEATURE_SLUG"
+```
+
+After writing the local artifact file, publish it to the issue tracker. Set two shell variables before running the block: `ISSUE_ARTIFACT_PATH` (absolute path to the local file just written) and `ISSUE_ARTIFACT_TITLE` (human-readable title for the issue).
+
+<!-- @issue-artifacts:begin -->
+```bash
+ISSUE_MODE=$(~/.claude/skills/gstack/bin/gstack-config get issue_artifacts)
+if [[ "$ISSUE_MODE" == "off" ]]; then exit 0; fi
+
+ISSUE_TRACKER=$(~/.claude/skills/gstack/bin/gstack-config get issue_tracker)
+if [[ "$ISSUE_TRACKER" == "none" ]]; then
+  echo "[issue-artifacts] FALLBACK: tracker disabled by config"
+  exit 0
+fi
+
+PLATFORM=$(~/.claude/skills/gstack/bin/gstack-issue-artifact detect-platform)
+if [[ "$PLATFORM" == "none" ]]; then
+  echo "[issue-artifacts] FALLBACK: no tracker detected"
+  exit 0
+fi
+
+POLICY_STATE=$(~/.claude/skills/gstack/bin/gstack-issue-repo-policy check --op write 2>&1) || {
+  echo "[issue-artifacts] BLOCKED: repo policy = $(echo "$POLICY_STATE" | head -1)"
+  exit 0
+}
+
+ISSUE_URL=$(~/.claude/skills/gstack/bin/gstack-issue-artifact create --kind gstack:ceo-plan \
+  --title "$ISSUE_ARTIFACT_TITLE" \
+  --body-file "$ISSUE_ARTIFACT_PATH" 2>&1) || {
+  echo "[issue-artifacts] FALLBACK: $(echo "$ISSUE_URL" | head -1)"
+  exit 0
+}
+
+LINK_OUT=$(~/.claude/skills/gstack/bin/gstack-issue-artifact link-local --file "$ISSUE_ARTIFACT_PATH" --issue "$ISSUE_URL" 2>&1) || {
+  echo "[issue-artifacts] FALLBACK: link-local failed: $(echo "$LINK_OUT" | head -1)"
+  exit 0
+}
+echo "[issue-artifacts] published gstack:ceo-plan -> $ISSUE_URL"
+```
+<!-- @issue-artifacts:end -->
+
 ## Mode Quick Reference
 ```
   ┌────────────────────────────────────────────────────────────────────────────────┐

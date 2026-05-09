@@ -455,6 +455,17 @@ Include backlog data in the JSON when TODOS.md exists:
   }
 ```
 
+### Publish to issue tracker
+
+Set the artifact path and title from the retro JSON just saved, then publish:
+
+```bash
+ISSUE_ARTIFACT_PATH=".context/retros/${today}-${next}.json"
+ISSUE_ARTIFACT_TITLE="Retro: $(date +%Y-%m-%d) window=${WINDOW:-7d}"
+```
+
+{{ISSUE_ARTIFACTS_BLOCK}}
+
 ### Step 14: Write the Narrative
 
 Structure the output as:

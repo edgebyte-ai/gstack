@@ -341,6 +341,8 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
   'issue-artifact-stub':         ['bin/gstack-issue-artifact', 'test/issue-artifacts-stub.test.ts', 'test/fixtures/issue-artifacts/**'],
   'issue-repo-policy':           ['bin/gstack-issue-repo-policy', 'test/issue-repo-policy.test.ts'],
   'issue-artifact-resolver':     ['scripts/resolvers/issue-artifacts.ts', 'bin/gstack-issue-artifact', 'bin/gstack-issue-repo-policy'],
+  'issue-artifact-off-gate':     ['scripts/resolvers/issue-artifacts.ts', 'test/issue-artifacts-off-gate.test.ts', 'bin/gstack-config', 'bin/gstack-issue-artifact', 'bin/gstack-issue-repo-policy'],
+  'issue-artifact-e2e':          ['scripts/resolvers/issue-artifacts.ts', 'test/skill-e2e-issue-artifacts.test.ts', 'bin/gstack-config', 'bin/gstack-issue-artifact', 'bin/gstack-issue-repo-policy', 'test/fixtures/issue-artifacts/**'],
 
   // Overlay efficacy harness (SDK) — measures whether overlay nudges change
   // behavior under @anthropic-ai/claude-agent-sdk (closer to real Claude Code
@@ -621,6 +623,8 @@ export const E2E_TIERS: Record<string, 'gate' | 'periodic'> = {
   'issue-artifact-stub': 'gate',
   'issue-repo-policy': 'gate',
   'issue-artifact-resolver': 'gate',
+  'issue-artifact-off-gate': 'gate',
+  'issue-artifact-e2e': 'gate',
 
   // Overlay efficacy harness (SDK, paid) — periodic only
   'overlay-harness-opus-4-7-fanout-toy': 'periodic',

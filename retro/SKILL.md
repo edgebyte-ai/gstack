@@ -1252,6 +1252,54 @@ Include backlog data in the JSON when TODOS.md exists:
   }
 ```
 
+### Publish to issue tracker
+
+Set the artifact path and title from the retro JSON just saved, then publish:
+
+```bash
+ISSUE_ARTIFACT_PATH=".context/retros/${today}-${next}.json"
+ISSUE_ARTIFACT_TITLE="Retro: $(date +%Y-%m-%d) window=${WINDOW:-7d}"
+```
+
+After writing the local artifact file, publish it to the issue tracker. Set two shell variables before running the block: `ISSUE_ARTIFACT_PATH` (absolute path to the local file just written) and `ISSUE_ARTIFACT_TITLE` (human-readable title for the issue).
+
+<!-- @issue-artifacts:begin -->
+```bash
+ISSUE_MODE=$(~/.claude/skills/gstack/bin/gstack-config get issue_artifacts)
+if [[ "$ISSUE_MODE" == "off" ]]; then exit 0; fi
+
+ISSUE_TRACKER=$(~/.claude/skills/gstack/bin/gstack-config get issue_tracker)
+if [[ "$ISSUE_TRACKER" == "none" ]]; then
+  echo "[issue-artifacts] FALLBACK: tracker disabled by config"
+  exit 0
+fi
+
+PLATFORM=$(~/.claude/skills/gstack/bin/gstack-issue-artifact detect-platform)
+if [[ "$PLATFORM" == "none" ]]; then
+  echo "[issue-artifacts] FALLBACK: no tracker detected"
+  exit 0
+fi
+
+POLICY_STATE=$(~/.claude/skills/gstack/bin/gstack-issue-repo-policy check --op write 2>&1) || {
+  echo "[issue-artifacts] BLOCKED: repo policy = $(echo "$POLICY_STATE" | head -1)"
+  exit 0
+}
+
+ISSUE_URL=$(~/.claude/skills/gstack/bin/gstack-issue-artifact create --kind gstack:retro \
+  --title "$ISSUE_ARTIFACT_TITLE" \
+  --body-file "$ISSUE_ARTIFACT_PATH" 2>&1) || {
+  echo "[issue-artifacts] FALLBACK: $(echo "$ISSUE_URL" | head -1)"
+  exit 0
+}
+
+LINK_OUT=$(~/.claude/skills/gstack/bin/gstack-issue-artifact link-local --file "$ISSUE_ARTIFACT_PATH" --issue "$ISSUE_URL" 2>&1) || {
+  echo "[issue-artifacts] FALLBACK: link-local failed: $(echo "$LINK_OUT" | head -1)"
+  exit 0
+}
+echo "[issue-artifacts] published gstack:retro -> $ISSUE_URL"
+```
+<!-- @issue-artifacts:end -->
+
 ### Step 14: Write the Narrative
 
 Structure the output as:

@@ -799,6 +799,17 @@ TIER is Champion/Competitive/NeedsWork/RedFlag.
 
 {{PLAN_FILE_REVIEW_REPORT}}
 
+### Publish to issue tracker
+
+Set the artifact path and title from the plan file just reviewed, then publish:
+
+```bash
+ISSUE_ARTIFACT_PATH="$DESIGN"
+ISSUE_ARTIFACT_TITLE="DX plan: $(basename "$DESIGN" .md | sed 's/^[0-9]*-//')"
+```
+
+{{ISSUE_ARTIFACTS_BLOCK}}
+
 {{LEARNINGS_LOG}}
 
 ## Next Steps — Review Chaining

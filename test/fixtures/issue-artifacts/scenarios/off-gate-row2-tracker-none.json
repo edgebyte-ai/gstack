@@ -1,0 +1,20 @@
+{
+  "description": "Row 2: issue_tracker=none prints FALLBACK",
+  "stubs": {
+    "gstack-config": {
+      "issue_artifacts": "on",
+      "issue_tracker": "none"
+    },
+    "gstack-issue-artifact": {
+      "detect-platform": { "stdout": "github", "exit": 0 },
+      "create": { "stdout": "https://github.com/test/repo/issues/99", "exit": 0 },
+      "link-local": { "stdout": "ok", "exit": 0 }
+    },
+    "gstack-issue-repo-policy": { "stdout": "allowed", "exit": 0 }
+  },
+  "expected": {
+    "exitCode": 0,
+    "stdoutContains": ["FALLBACK: tracker disabled"],
+    "stdoutNotContains": ["published"]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "description": "Row 5: create fails, prints FALLBACK with bounded error",
+  "stubs": {
+    "gstack-config": {
+      "issue_artifacts": "on",
+      "issue_tracker": "github"
+    },
+    "gstack-issue-artifact": {
+      "detect-platform": { "stdout": "github", "exit": 0 },
+      "create": { "stdout": "", "stderr": "gh: HTTP 403", "exit": 1 },
+      "link-local": { "stdout": "ok", "exit": 0 }
+    },
+    "gstack-issue-repo-policy": { "stdout": "allowed", "exit": 0 }
+  },
+  "expected": {
+    "exitCode": 0,
+    "stdoutContains": ["FALLBACK:"],
+    "stdoutNotContains": ["published"]
+  }
+}

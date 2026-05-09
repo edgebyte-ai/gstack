@@ -852,6 +852,17 @@ If promoted, copy the CEO plan content to `docs/designs/{FEATURE}.md` (create th
 
 {{GBRAIN_SAVE_RESULTS}}
 
+### Publish to issue tracker
+
+Set the artifact path and title from the CEO plan just written, then publish:
+
+```bash
+ISSUE_ARTIFACT_PATH="$HOME/.gstack/projects/$SLUG/ceo-plans/$DATE-$FEATURE_SLUG.md"
+ISSUE_ARTIFACT_TITLE="CEO plan: $FEATURE_SLUG"
+```
+
+{{ISSUE_ARTIFACTS_BLOCK}}
+
 ## Mode Quick Reference
 ```
   ┌────────────────────────────────────────────────────────────────────────────────┐
