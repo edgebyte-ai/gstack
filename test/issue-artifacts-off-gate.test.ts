@@ -7,9 +7,11 @@
  * resolver shape regresses.
  *
  * Behavioral section: exercises the generated bash block through stub shims
- * with per-test temporary ledgers, proving each early-exit gate.
+ * with per-test STUB_GH_LEDGER isolation (mkdtempSync), proving each
+ * early-exit gate across all 8 producer skills. Ledger entries provide
+ * argument-level call records for assertions.
  */
-import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import { generateIssueArtifactsBlock } from '../scripts/resolvers/issue-artifacts';
 import type { TemplateContext, HostPaths } from '../scripts/resolvers/types';
 import { marked } from 'marked';
@@ -26,6 +28,28 @@ const MOCK_PATHS: HostPaths = {
   makePdfDir: '~/.claude/skills/gstack/make-pdf/dist',
 };
 
+const PRODUCER_SKILLS = [
+  'office-hours',
+  'plan-ceo-review',
+  'plan-eng-review',
+  'plan-design-review',
+  'plan-devex-review',
+  'design-consultation',
+  'retro',
+  'context-save',
+] as const;
+
+const SKILL_KIND_MAP: Record<string, { kind: string; extraLabels?: string[] }> = {
+  'office-hours':        { kind: 'gstack:design-doc' },
+  'plan-ceo-review':     { kind: 'gstack:ceo-plan' },
+  'plan-eng-review':     { kind: 'gstack:eng-plan' },
+  'plan-design-review':  { kind: 'gstack:design-plan' },
+  'plan-devex-review':   { kind: 'gstack:devex-plan' },
+  'design-consultation': { kind: 'gstack:design-doc', extraLabels: ['design-system'] },
+  'retro':               { kind: 'gstack:retro' },
+  'context-save':        { kind: 'gstack:context-save' },
+};
+
 function makeCtx(skillName: string): TemplateContext {
   return {
     skillName,
@@ -35,36 +59,67 @@ function makeCtx(skillName: string): TemplateContext {
   };
 }
 
+// ---------------------------------------------------------------------------
+// AST-walk anchor extraction (replaces indexOf/slice approach)
+// ---------------------------------------------------------------------------
+
 /**
- * Extract the bash code block between anchor markers using `marked` lexer.
- * Returns the raw code text (no fences, no language tag).
+ * Walk the full marked AST to find the bash code block between anchor HTML
+ * comment tokens. Returns null if anchors are missing or the region between
+ * them doesn't contain exactly one fenced code block.
  */
 function extractAnchoredBashBlock(output: string): { code: string; lang: string } | null {
-  const beginAnchor = '<!-- @issue-artifacts:begin -->';
-  const endAnchor = '<!-- @issue-artifacts:end -->';
-  const beginIdx = output.indexOf(beginAnchor);
-  const endIdx = output.indexOf(endAnchor);
-  if (beginIdx === -1 || endIdx === -1) return null;
+  const tokens = marked.lexer(output);
+  let insideAnchors = false;
+  const anchored: marked.Token[] = [];
 
-  const between = output.slice(beginIdx + beginAnchor.length, endIdx);
-  const tokens = marked.lexer(between);
-  const codeTokens = tokens.filter((t): t is marked.Tokens.Code => t.type === 'code');
+  for (const token of tokens) {
+    if (token.type === 'html' && token.text.includes('<!-- @issue-artifacts:begin -->')) {
+      insideAnchors = true;
+      continue;
+    }
+    if (insideAnchors && token.type === 'html' && token.text.includes('<!-- @issue-artifacts:end -->')) {
+      break;
+    }
+    if (insideAnchors) {
+      anchored.push(token);
+    }
+  }
+
+  const codeTokens = anchored.filter((t): t is marked.Tokens.Code => t.type === 'code');
   if (codeTokens.length !== 1) return null;
   return { code: codeTokens[0].text, lang: codeTokens[0].lang || '' };
 }
 
-describe('AC3: ISSUE_ARTIFACTS_BLOCK shape constraint', () => {
-  const PRODUCER_SKILLS = [
-    'office-hours',
-    'plan-ceo-review',
-    'plan-eng-review',
-    'plan-design-review',
-    'plan-devex-review',
-    'design-consultation',
-    'retro',
-    'context-save',
-  ];
+/**
+ * AST-walk check: returns non-code, non-space tokens between anchors.
+ * Empty array means clean (no prose leaking into the anchored region).
+ */
+function proseTokensBetweenAnchors(output: string): marked.Token[] {
+  const tokens = marked.lexer(output);
+  let inside = false;
+  const prose: marked.Token[] = [];
 
+  for (const token of tokens) {
+    if (token.type === 'html' && token.text.includes('<!-- @issue-artifacts:begin -->')) {
+      inside = true;
+      continue;
+    }
+    if (inside && token.type === 'html' && token.text.includes('<!-- @issue-artifacts:end -->')) {
+      break;
+    }
+    if (inside && token.type !== 'code' && token.type !== 'space') {
+      prose.push(token);
+    }
+  }
+  return prose;
+}
+
+// ---------------------------------------------------------------------------
+// Shape constraint tests
+// ---------------------------------------------------------------------------
+
+describe('AC3: ISSUE_ARTIFACTS_BLOCK shape constraint', () => {
   for (const skill of PRODUCER_SKILLS) {
     test(`${skill}: output contains begin/end anchors`, () => {
       const output = generateIssueArtifactsBlock(makeCtx(skill));
@@ -72,7 +127,7 @@ describe('AC3: ISSUE_ARTIFACTS_BLOCK shape constraint', () => {
       expect(output).toContain('<!-- @issue-artifacts:end -->');
     });
 
-    test(`${skill}: exactly one bash code block between anchors (via marked)`, () => {
+    test(`${skill}: exactly one bash code block between anchors (AST walk)`, () => {
       const output = generateIssueArtifactsBlock(makeCtx(skill));
       const result = extractAnchoredBashBlock(output);
       expect(result).not.toBeNull();
@@ -80,27 +135,25 @@ describe('AC3: ISSUE_ARTIFACTS_BLOCK shape constraint', () => {
       expect(result!.code.length).toBeGreaterThan(0);
     });
 
-    test(`${skill}: no prose between anchors (only whitespace + fenced block)`, () => {
+    test(`${skill}: no prose between anchors (AST walk)`, () => {
       const output = generateIssueArtifactsBlock(makeCtx(skill));
-      const beginAnchor = '<!-- @issue-artifacts:begin -->';
-      const endAnchor = '<!-- @issue-artifacts:end -->';
-      const between = output.slice(
-        output.indexOf(beginAnchor) + beginAnchor.length,
-        output.indexOf(endAnchor),
-      );
-      const tokens = marked.lexer(between);
-      const nonSpaceNonCode = tokens.filter(
-        t => t.type !== 'code' && t.type !== 'space',
-      );
-      expect(nonSpaceNonCode).toHaveLength(0);
+      expect(proseTokensBetweenAnchors(output)).toHaveLength(0);
     });
   }
 
   test('narrative text lives OUTSIDE (before) the begin anchor', () => {
-    const output = generateIssueArtifactsBlock(makeCtx('office-hours'));
-    const beginIdx = output.indexOf('<!-- @issue-artifacts:begin -->');
-    const preamble = output.slice(0, beginIdx);
-    expect(preamble.trim().length).toBeGreaterThan(0);
+    const tokens = marked.lexer(generateIssueArtifactsBlock(makeCtx('office-hours')));
+    let foundAnchor = false;
+    let preAnchorContent = false;
+    for (const token of tokens) {
+      if (token.type === 'html' && token.text.includes('<!-- @issue-artifacts:begin -->')) {
+        foundAnchor = true;
+        break;
+      }
+      if (token.type !== 'space') preAnchorContent = true;
+    }
+    expect(foundAnchor).toBe(true);
+    expect(preAnchorContent).toBe(true);
   });
 
   test('uses correct kind for known skill', () => {
@@ -134,238 +187,287 @@ describe('AC3: ISSUE_ARTIFACTS_BLOCK shape constraint', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Behavioral off-gate tests — exercises generated bash via stub shims
+// Behavioral off-gate tests — stub shims with STUB_GH_LEDGER isolation
 // ---------------------------------------------------------------------------
 
-describe('AC3: behavioral off-gate (stub shim)', () => {
-  const STUB_DIR = join(process.cwd(), 'test', 'fixtures', 'issue-artifacts');
+interface ScenarioRow {
+  description: string;
+  stubs: {
+    'gstack-config': Record<string, string>;
+    'gstack-issue-artifact': {
+      'detect-platform': { stdout: string; exit: number };
+      create: { stdout: string; stderr?: string; exit: number };
+      'link-local': { stdout: string; stderr?: string; exit: number };
+    };
+    'gstack-issue-repo-policy': { stdout: string; exit: number };
+  };
+  expected: {
+    exitCode: number;
+    stdoutContains: string[];
+    stdoutNotContains: string[];
+  };
+}
 
-  function makeBinDir(tmpDir: string): string {
-    const binDir = join(tmpDir, 'bin');
-    mkdirSync(binDir, { recursive: true });
-    return binDir;
-  }
+interface LedgerEntry {
+  ts: string;
+  bin: string;
+  argv: string[];
+  response_code: number;
+}
 
-  /**
-   * Write a stub `gstack-config` that returns a given value for a key.
-   * configMap: { issue_artifacts: "off", issue_tracker: "github" }
-   */
-  function writeConfigStub(binDir: string, configMap: Record<string, string>) {
-    const script = `#!/usr/bin/env bash
-case "$2" in
-${Object.entries(configMap).map(([k, v]) => `  ${k}) echo "${v}" ;;`).join('\n')}
-  *) echo "unknown" ;;
+const SCENARIO_DIR = join(process.cwd(), 'test', 'fixtures', 'issue-artifacts', 'scenarios');
+
+function loadScenario(filename: string): ScenarioRow {
+  return JSON.parse(readFileSync(join(SCENARIO_DIR, filename), 'utf-8'));
+}
+
+function readLedger(ledgerPath: string): LedgerEntry[] {
+  if (!existsSync(ledgerPath)) return [];
+  return readFileSync(ledgerPath, 'utf-8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line));
+}
+
+const LEDGER_FN = `
+_ledger() {
+  [[ -z "\${STUB_GH_LEDGER:-}" ]] && return 0
+  local _ec="$1"; shift
+  local _argv
+  _argv=$(printf '%s\\n' "$@" | jq -R . 2>/dev/null | jq -sc . 2>/dev/null || echo '[]')
+  printf '{"ts":"%s","bin":"%s","argv":%s,"response_code":%d}\\n' \\
+    "$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')" "$_BIN" "$_argv" "$_ec" >> "$STUB_GH_LEDGER"
+}`.trim();
+
+function makeBinDir(tmpDir: string): string {
+  const binDir = join(tmpDir, 'bin');
+  mkdirSync(binDir, { recursive: true });
+  return binDir;
+}
+
+function writeConfigStub(binDir: string, configMap: Record<string, string>) {
+  const cases = Object.entries(configMap)
+    .map(([k, v]) => `  ${k}) _OUT="${v}"; _EC=0 ;;`)
+    .join('\n');
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+_BIN="gstack-config"
+${LEDGER_FN}
+_OUT="unknown"; _EC=0
+case "\$2" in
+${cases}
+  *) _OUT="unknown"; _EC=0 ;;
 esac
+_ledger "$_EC" "$@"
+echo "$_OUT"
+exit "$_EC"
 `;
-    const path = join(binDir, 'gstack-config');
-    writeFileSync(path, script);
-    chmodSync(path, 0o755);
-  }
+  const p = join(binDir, 'gstack-config');
+  writeFileSync(p, script);
+  chmodSync(p, 0o755);
+}
 
-  /**
-   * Write a stub `gstack-issue-artifact` that dispatches on the first arg.
-   */
-  function writeArtifactStub(
-    binDir: string,
-    opts: {
-      detectPlatform?: { stdout: string; exit: number };
-      create?: { stdout: string; stderr?: string; exit: number };
-      linkLocal?: { stdout: string; stderr?: string; exit: number };
-    },
-  ) {
-    const dp = opts.detectPlatform ?? { stdout: 'github', exit: 0 };
-    const cr = opts.create ?? { stdout: 'https://github.com/test/repo/issues/99', stderr: '', exit: 0 };
-    const ll = opts.linkLocal ?? { stdout: '', stderr: '', exit: 0 };
-    const script = `#!/usr/bin/env bash
-case "$1" in
+function writeArtifactStub(
+  binDir: string,
+  opts: {
+    'detect-platform': { stdout: string; exit: number };
+    create: { stdout: string; stderr?: string; exit: number };
+    'link-local': { stdout: string; stderr?: string; exit: number };
+  },
+) {
+  const dp = opts['detect-platform'];
+  const cr = opts.create;
+  const ll = opts['link-local'];
+  const script = `#!/usr/bin/env bash
+set -uo pipefail
+_BIN="gstack-issue-artifact"
+${LEDGER_FN}
+case "\$1" in
   detect-platform)
+    _ledger ${dp.exit} "$@"
     echo "${dp.stdout}"
     exit ${dp.exit}
     ;;
   create)
-    if [[ -n "${cr.stderr ?? ''}" ]]; then echo "${cr.stderr ?? ''}" >&2; fi
+    _ledger ${cr.exit} "$@"
+    ${cr.stderr ? `echo "${cr.stderr}" >&2` : ':'}
     echo "${cr.stdout}"
     exit ${cr.exit}
     ;;
   link-local)
-    if [[ -n "${ll.stderr ?? ''}" ]]; then echo "${ll.stderr ?? ''}" >&2; fi
+    _ledger ${ll.exit} "$@"
+    ${ll.stderr ? `echo "${ll.stderr}" >&2` : ':'}
     echo "${ll.stdout}"
     exit ${ll.exit}
     ;;
-  *) echo "unknown subcommand: $1" >&2; exit 1 ;;
+  *) _ledger 1 "$@"; echo "unknown: \$1" >&2; exit 1 ;;
 esac
 `;
-    const path = join(binDir, 'gstack-issue-artifact');
-    writeFileSync(path, script);
-    chmodSync(path, 0o755);
-  }
+  const p = join(binDir, 'gstack-issue-artifact');
+  writeFileSync(p, script);
+  chmodSync(p, 0o755);
+}
 
-  /**
-   * Write a stub `gstack-issue-repo-policy`.
-   */
-  function writePolicyStub(binDir: string, opts: { stdout: string; exit: number }) {
-    const script = `#!/usr/bin/env bash
-# stub for gstack-issue-repo-policy check --op write
+function writePolicyStub(binDir: string, opts: { stdout: string; exit: number }) {
+  const script = `#!/usr/bin/env bash
+set -uo pipefail
+_BIN="gstack-issue-repo-policy"
+${LEDGER_FN}
+_ledger ${opts.exit} "$@"
 echo "${opts.stdout}"
 exit ${opts.exit}
 `;
-    const filePath = join(binDir, 'gstack-issue-repo-policy');
-    writeFileSync(filePath, script);
-    chmodSync(filePath, 0o755);
-  }
+  const p = join(binDir, 'gstack-issue-repo-policy');
+  writeFileSync(p, script);
+  chmodSync(p, 0o755);
+}
 
-  function runBashBlock(code: string, binDir: string): { stdout: string; stderr: string; exitCode: number } {
-    const result = Bun.spawnSync({
-      cmd: ['bash', '-c', code],
-      env: {
-        ...process.env,
-        PATH: `${binDir}:${process.env.PATH}`,
-        ISSUE_ARTIFACT_PATH: '/tmp/test-artifact.md',
-        ISSUE_ARTIFACT_TITLE: 'Test Artifact',
-      },
+function runBashBlock(
+  code: string,
+  binDir: string,
+  ledger: string,
+): { stdout: string; stderr: string; exitCode: number } {
+  const result = Bun.spawnSync({
+    cmd: ['bash', '-c', code],
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH}`,
+      ISSUE_ARTIFACT_PATH: '/tmp/test-artifact.md',
+      ISSUE_ARTIFACT_TITLE: 'Test Artifact',
+      STUB_GH_LEDGER: ledger,
+    },
+  });
+  return {
+    stdout: result.stdout.toString().trim(),
+    stderr: result.stderr.toString().trim(),
+    exitCode: result.exitCode,
+  };
+}
+
+function getBlockForSkill(skill: string, binDir: string): string {
+  const ctx = makeCtx(skill);
+  ctx.paths = { ...MOCK_PATHS, binDir: '__BINDIR__' };
+  const output = generateIssueArtifactsBlock(ctx);
+  const result = extractAnchoredBashBlock(output);
+  if (!result) throw new Error(`Failed to extract bash block for ${skill}`);
+  return result.code.replaceAll('__BINDIR__', binDir);
+}
+
+// Scenario fixture files (one per row of the matrix)
+const SCENARIO_ROWS = [
+  { name: 'row1-disabled',        file: 'off-gate-row1-disabled.json' },
+  { name: 'row2-tracker-none',    file: 'off-gate-row2-tracker-none.json' },
+  { name: 'row3-platform-none',   file: 'off-gate-row3-platform-none.json' },
+  { name: 'row4-policy-blocked',  file: 'off-gate-row4-policy-blocked.json' },
+  { name: 'row5-create-fail',     file: 'off-gate-row5-create-fail.json' },
+  { name: 'row6-happy',           file: 'off-gate-row6-happy.json' },
+  { name: 'row7-linklocal-fail',  file: 'off-gate-row7-linklocal-fail.json' },
+] as const;
+
+describe('AC3: behavioral off-gate (stub shim + STUB_GH_LEDGER)', () => {
+  for (const skill of PRODUCER_SKILLS) {
+    describe(skill, () => {
+      for (const row of SCENARIO_ROWS) {
+        test(`${row.name}`, () => {
+          const tmpDir = mkdtempSync(join(tmpdir(), `off-gate-${skill}-${row.name}-`));
+          try {
+            const binDir = makeBinDir(tmpDir);
+            const ledger = join(tmpDir, 'recorded-calls.jsonl');
+            const scenario = loadScenario(row.file);
+
+            writeConfigStub(binDir, scenario.stubs['gstack-config']);
+            writeArtifactStub(binDir, scenario.stubs['gstack-issue-artifact']);
+            writePolicyStub(binDir, scenario.stubs['gstack-issue-repo-policy']);
+
+            const code = getBlockForSkill(skill, binDir);
+            const r = runBashBlock(code, binDir, ledger);
+
+            // Exit code assertion
+            expect(r.exitCode).toBe(scenario.expected.exitCode);
+
+            // Stdout assertions from fixture
+            for (const s of scenario.expected.stdoutContains) {
+              expect(r.stdout).toContain(s);
+            }
+            for (const s of scenario.expected.stdoutNotContains) {
+              expect(r.stdout).not.toContain(s);
+            }
+
+            // Ledger isolation: file exists at per-test path
+            const entries = readLedger(ledger);
+
+            // Row-specific ledger + skill-specific assertions
+            const skillMeta = SKILL_KIND_MAP[skill] ?? { kind: 'gstack:design-doc' };
+
+            if (row.name === 'row1-disabled') {
+              // Off gate: only gstack-config called, exits before anything else
+              expect(entries.some(e => e.bin === 'gstack-config')).toBe(true);
+              expect(entries.some(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'create')).toBe(false);
+            }
+
+            if (row.name === 'row2-tracker-none') {
+              expect(entries.some(e => e.bin === 'gstack-config')).toBe(true);
+              expect(entries.some(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'create')).toBe(false);
+            }
+
+            if (row.name === 'row3-platform-none') {
+              expect(entries.some(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'detect-platform')).toBe(true);
+              expect(entries.some(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'create')).toBe(false);
+            }
+
+            if (row.name === 'row4-policy-blocked') {
+              expect(entries.some(e => e.bin === 'gstack-issue-repo-policy')).toBe(true);
+              expect(entries.filter(e => e.bin === 'gstack-issue-repo-policy')[0]?.response_code).toBe(1);
+              expect(entries.some(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'create')).toBe(false);
+            }
+
+            if (row.name === 'row5-create-fail') {
+              const createEntry = entries.find(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'create');
+              expect(createEntry).toBeDefined();
+              expect(createEntry!.response_code).toBe(1);
+              expect(createEntry!.argv).toContain('--kind');
+              expect(createEntry!.argv).toContain(skillMeta.kind);
+            }
+
+            if (row.name === 'row6-happy') {
+              // Verify create was called with correct kind
+              const createEntry = entries.find(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'create');
+              expect(createEntry).toBeDefined();
+              expect(createEntry!.argv).toContain('--kind');
+              expect(createEntry!.argv).toContain(skillMeta.kind);
+
+              if (skillMeta.extraLabels?.length) {
+                for (const label of skillMeta.extraLabels) {
+                  expect(createEntry!.argv).toContain(label);
+                }
+              }
+
+              // Verify link-local was called
+              const linkEntry = entries.find(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'link-local');
+              expect(linkEntry).toBeDefined();
+              expect(linkEntry!.response_code).toBe(0);
+
+              // Verify published message includes skill kind
+              expect(r.stdout).toContain(`published ${skillMeta.kind}`);
+            }
+
+            if (row.name === 'row7-linklocal-fail') {
+              const createEntry = entries.find(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'create');
+              expect(createEntry).toBeDefined();
+              expect(createEntry!.argv).toContain(skillMeta.kind);
+
+              const linkEntry = entries.find(e => e.bin === 'gstack-issue-artifact' && e.argv[0] === 'link-local');
+              expect(linkEntry).toBeDefined();
+              expect(linkEntry!.response_code).toBe(1);
+
+              expect(r.stdout).not.toContain('published');
+            }
+          } finally {
+            rmSync(tmpDir, { recursive: true, force: true });
+          }
+        });
+      }
     });
-    return {
-      stdout: result.stdout.toString().trim(),
-      stderr: result.stderr.toString().trim(),
-      exitCode: result.exitCode,
-    };
   }
-
-  function getBlock(): string {
-    const ctx = makeCtx('office-hours');
-    ctx.paths = { ...MOCK_PATHS, binDir: '__BINDIR__' };
-    const output = generateIssueArtifactsBlock(ctx);
-    const result = extractAnchoredBashBlock(output);
-    if (!result) throw new Error('Failed to extract bash block');
-    return result.code;
-  }
-
-  test('row 1 — off gate: issue_artifacts=off exits immediately', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'off-gate-off-'));
-    try {
-      const binDir = makeBinDir(tmpDir);
-      writeConfigStub(binDir, { issue_artifacts: 'off', issue_tracker: 'github' });
-      writeArtifactStub(binDir, {});
-      writePolicyStub(binDir, { stdout: 'allowed', exit: 0 });
-
-      const code = getBlock().replaceAll('__BINDIR__', binDir);
-      const r = runBashBlock(code, binDir);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toBe('');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('row 2 — tracker=none: prints FALLBACK and exits', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'off-gate-tracker-'));
-    try {
-      const binDir = makeBinDir(tmpDir);
-      writeConfigStub(binDir, { issue_artifacts: 'on', issue_tracker: 'none' });
-      writeArtifactStub(binDir, {});
-      writePolicyStub(binDir, { stdout: 'allowed', exit: 0 });
-
-      const code = getBlock().replaceAll('__BINDIR__', binDir);
-      const r = runBashBlock(code, binDir);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain('[issue-artifacts] FALLBACK: tracker disabled');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('row 3 — platform=none: prints FALLBACK and exits', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'off-gate-platform-'));
-    try {
-      const binDir = makeBinDir(tmpDir);
-      writeConfigStub(binDir, { issue_artifacts: 'on', issue_tracker: 'github' });
-      writeArtifactStub(binDir, { detectPlatform: { stdout: 'none', exit: 0 } });
-      writePolicyStub(binDir, { stdout: 'allowed', exit: 0 });
-
-      const code = getBlock().replaceAll('__BINDIR__', binDir);
-      const r = runBashBlock(code, binDir);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain('[issue-artifacts] FALLBACK: no tracker detected');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('row 4 — policy blocked: prints BLOCKED and exits', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'off-gate-policy-'));
-    try {
-      const binDir = makeBinDir(tmpDir);
-      writeConfigStub(binDir, { issue_artifacts: 'on', issue_tracker: 'github' });
-      writeArtifactStub(binDir, {});
-      writePolicyStub(binDir, { stdout: 'read-only', exit: 1 });
-
-      const code = getBlock().replaceAll('__BINDIR__', binDir);
-      const r = runBashBlock(code, binDir);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain('[issue-artifacts] BLOCKED: repo policy');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('row 5 — create failure: prints FALLBACK with error text', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'off-gate-create-'));
-    try {
-      const binDir = makeBinDir(tmpDir);
-      writeConfigStub(binDir, { issue_artifacts: 'on', issue_tracker: 'github' });
-      writeArtifactStub(binDir, {
-        create: { stdout: '', stderr: 'gh: HTTP 403', exit: 1 },
-      });
-      writePolicyStub(binDir, { stdout: 'allowed', exit: 0 });
-
-      const code = getBlock().replaceAll('__BINDIR__', binDir);
-      const r = runBashBlock(code, binDir);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain('[issue-artifacts] FALLBACK:');
-      expect(r.stderr).not.toContain('gh: HTTP 403');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('row 6 — positive control: happy path publishes', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'off-gate-happy-'));
-    try {
-      const binDir = makeBinDir(tmpDir);
-      writeConfigStub(binDir, { issue_artifacts: 'on', issue_tracker: 'github' });
-      writeArtifactStub(binDir, {
-        create: { stdout: 'https://github.com/test/repo/issues/99', exit: 0 },
-        linkLocal: { stdout: 'ok', exit: 0 },
-      });
-      writePolicyStub(binDir, { stdout: 'allowed', exit: 0 });
-
-      const code = getBlock().replaceAll('__BINDIR__', binDir);
-      const r = runBashBlock(code, binDir);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain('[issue-artifacts] published gstack:design-doc -> https://github.com/test/repo/issues/99');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  test('row 5b — link-local failure: prints FALLBACK, no false-positive publish', () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'off-gate-linklocal-'));
-    try {
-      const binDir = makeBinDir(tmpDir);
-      writeConfigStub(binDir, { issue_artifacts: 'on', issue_tracker: 'github' });
-      writeArtifactStub(binDir, {
-        create: { stdout: 'https://github.com/test/repo/issues/99', exit: 0 },
-        linkLocal: { stdout: '', stderr: 'frontmatter write failed', exit: 1 },
-      });
-      writePolicyStub(binDir, { stdout: 'allowed', exit: 0 });
-
-      const code = getBlock().replaceAll('__BINDIR__', binDir);
-      const r = runBashBlock(code, binDir);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain('[issue-artifacts] FALLBACK: link-local failed');
-      expect(r.stdout).not.toContain('[issue-artifacts] published');
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
 });

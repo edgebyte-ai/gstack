@@ -1,0 +1,20 @@
+{
+  "description": "Row 7: link-local fails, prints FALLBACK, no false-positive publish",
+  "stubs": {
+    "gstack-config": {
+      "issue_artifacts": "on",
+      "issue_tracker": "github"
+    },
+    "gstack-issue-artifact": {
+      "detect-platform": { "stdout": "github", "exit": 0 },
+      "create": { "stdout": "https://github.com/test/repo/issues/99", "exit": 0 },
+      "link-local": { "stdout": "", "stderr": "frontmatter write failed", "exit": 1 }
+    },
+    "gstack-issue-repo-policy": { "stdout": "allowed", "exit": 0 }
+  },
+  "expected": {
+    "exitCode": 0,
+    "stdoutContains": ["FALLBACK: link-local failed"],
+    "stdoutNotContains": ["published"]
+  }
+}
