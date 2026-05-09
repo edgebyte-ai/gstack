@@ -1,5 +1,5 @@
 ---
-name: gstack-design-shotgun
+name: design-shotgun
 preamble-tier: 2
 version: 1.0.0
 description: |

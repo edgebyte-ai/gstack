@@ -1,5 +1,5 @@
 ---
-name: gstack-design-review
+name: design-review
 preamble-tier: 4
 version: 2.0.0
 description: |

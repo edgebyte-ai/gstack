@@ -1,5 +1,5 @@
 ---
-name: gstack-plan-ceo-review
+name: plan-ceo-review
 preamble-tier: 3
 interactive: true
 version: 1.0.0

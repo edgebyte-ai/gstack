@@ -1,5 +1,5 @@
 ---
-name: gstack-plan-eng-review
+name: plan-eng-review
 preamble-tier: 3
 interactive: true
 version: 1.0.0

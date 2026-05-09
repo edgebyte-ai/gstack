@@ -1,5 +1,5 @@
 ---
-name: gstack-scrape
+name: scrape
 version: 1.0.0
 description: |
   Pull data from a web page. First call on a new intent prototypes the flow

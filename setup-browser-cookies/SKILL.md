@@ -1,5 +1,5 @@
 ---
-name: gstack-setup-browser-cookies
+name: setup-browser-cookies
 preamble-tier: 1
 version: 1.0.0
 description: |

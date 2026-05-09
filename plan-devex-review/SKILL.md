@@ -1,5 +1,5 @@
 ---
-name: gstack-plan-devex-review
+name: plan-devex-review
 preamble-tier: 3
 interactive: true
 version: 2.0.0
