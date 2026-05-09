@@ -10,6 +10,7 @@
  *   create --kind <kind> --title <t> --body-file <path> [--label <l>]...
  *   update <number-or-url> --body-file <path>
  *   read <number-or-url> [--comments-trust trusted-only|issue-author-only|all]
+ *   find --label <l> [--state open|closed|all] [--kind <kind>] [--limit <n>]
  *   link-local --file <path> --issue <number-or-url>
  *   list-by-label --label <l> [--state open|closed|all] [--since <iso>]
  *   validate-url <url>
@@ -174,6 +175,34 @@ function cliBin(platform: Platform): string {
   return platform === "github" ? "gh" : "glab";
 }
 
+// ── Retry with exponential backoff ────────────────────────────────────────
+
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 1000;
+
+function isRateLimited(stderr: string): boolean {
+  const lower = stderr.toLowerCase();
+  return lower.includes("rate limit") || lower.includes("429") || lower.includes("secondary rate");
+}
+
+function spawnWithRetry(opts: { cmd: string[]; stdin?: string }): { stdout: string; stderr: string; exitCode: number } {
+  const cmd = opts.cmd;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const result = opts.stdin
+      ? Bun.spawnSync({ cmd, stdin: Buffer.from(opts.stdin) })
+      : Bun.spawnSync({ cmd });
+    const stderr = result.stderr.toString();
+
+    if (result.exitCode === 0 || !isRateLimited(stderr) || attempt === MAX_RETRIES) {
+      return { stdout: result.stdout.toString(), stderr, exitCode: result.exitCode ?? 1 };
+    }
+
+    const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+    Bun.sleepSync(delay);
+  }
+  return { stdout: "", stderr: "max retries exceeded", exitCode: 1 };
+}
+
 // ── Remote URL parsing ─────────────────────────────────────────────────────
 
 function getCurrentRepoRemote(): string {
@@ -234,19 +263,23 @@ function cmdCreate(args: Map<string, string[]>): void {
   }
 
   const labelArgs: string[] = [];
-  for (const l of allLabels) {
-    labelArgs.push("--label", l);
+  if (platform === "github") {
+    for (const l of allLabels) labelArgs.push("--label", l);
+  } else {
+    labelArgs.push("--label", allLabels.join(","));
   }
 
-  const result = Bun.spawnSync({
-    cmd: [bin, "issue", "create", "--title", title, "--body-file", bodyFile, ...labelArgs],
-  });
+  const cmd: string[] = platform === "github"
+    ? [bin, "issue", "create", "--title", title, "--body-file", bodyFile, ...labelArgs]
+    : [bin, "issue", "create", "--title", title, "--description", readFileSync(bodyFile, "utf-8"), ...labelArgs];
+
+  const result = spawnWithRetry({ cmd });
 
   if (result.exitCode !== 0) {
-    die(`issue create failed: ${result.stderr.toString().trim()}`);
+    die(`issue create failed: ${result.stderr.trim()}`);
   }
 
-  const output = result.stdout.toString().trim();
+  const output = result.stdout.trim();
 
   if (platform === "github") {
     const urlMatch = output.match(/(https:\/\/github\.com\/[^\s]+\/issues\/(\d+))/);
@@ -277,12 +310,14 @@ function cmdUpdate(args: Map<string, string[]>): void {
   if (!existsSync(bodyFile)) die(`body file not found: ${bodyFile}`);
 
   const num = resolve(numberOrUrl);
-  const result = Bun.spawnSync({
-    cmd: [bin, "issue", "edit", num, "--body-file", bodyFile],
-  });
+  const body = readFileSync(bodyFile, "utf-8");
+  const cmd: string[] = platform === "github"
+    ? [bin, "issue", "edit", num, "--body-file", bodyFile]
+    : [bin, "issue", "update", num, "--description", body];
+  const result = spawnWithRetry({ cmd });
 
   if (result.exitCode !== 0) {
-    die(`issue update failed: ${result.stderr.toString().trim()}`);
+    die(`issue update failed: ${result.stderr.trim()}`);
   }
 }
 
@@ -304,15 +339,16 @@ function cmdRead(args: Map<string, string[]>): void {
 
   const num = resolve(numberOrUrl);
 
-  const issueResult = Bun.spawnSync({
-    cmd: [bin, "issue", "view", num, "--json", "url,title,body,state,labels,author,comments"],
-  });
+  const viewCmd: string[] = platform === "github"
+    ? [bin, "issue", "view", num, "--json", "url,title,body,state,labels,author,comments"]
+    : [bin, "issue", "view", num, "--output", "json", "--comments"];
+  const issueResult = spawnWithRetry({ cmd: viewCmd });
 
   if (issueResult.exitCode !== 0) {
-    die(`issue read failed: ${issueResult.stderr.toString().trim()}`);
+    die(`issue read failed: ${issueResult.stderr.trim()}`);
   }
 
-  const raw = JSON.parse(issueResult.stdout.toString());
+  const raw = JSON.parse(issueResult.stdout);
 
   const issueAuthor: string = raw.author?.login ?? raw.author?.username ?? "";
   const labels: string[] = (raw.labels ?? []).map((l: any) => l.name ?? l);
@@ -325,7 +361,7 @@ function cmdRead(args: Map<string, string[]>): void {
     authorAssociation?: string;
   };
 
-  const allComments: RawComment[] = raw.comments ?? [];
+  const allComments: RawComment[] = raw.comments ?? raw.notes ?? [];
   const trusted: NormalizedIssue["comments_trusted"] = [];
   const droppedAuthors = new Set<string>();
   let droppedCount = 0;
@@ -347,7 +383,11 @@ function cmdRead(args: Map<string, string[]>): void {
         keep = author === issueAuthor;
         break;
       case "trusted-only":
-        keep = TRUSTED_ASSOCIATIONS.has(association);
+        if (platform === "gitlab") {
+          keep = author === issueAuthor;
+        } else {
+          keep = TRUSTED_ASSOCIATIONS.has(association);
+        }
         break;
     }
 
@@ -374,6 +414,14 @@ function cmdRead(args: Map<string, string[]>): void {
   console.log(JSON.stringify(normalized, null, 2));
 }
 
+function yamlSafeUrl(url: string): string {
+  if (/[\n\r]/.test(url)) die("issue URL contains newline — refusing to write (possible injection)");
+  if (/[:#{}[\]&*?|><!%@`]/.test(url.replace(/^https?:\/\//, "").replace(/[#].*$/, ""))) {
+    return `"${url.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  }
+  return `"${url}"`;
+}
+
 function cmdLinkLocal(args: Map<string, string[]>): void {
   const filePath = arg1(args, "--file");
   const issueRef = arg1(args, "--issue");
@@ -389,6 +437,8 @@ function cmdLinkLocal(args: Map<string, string[]>): void {
     const normalized = normalizeRepoUrl(remote);
     issueUrl = `https://${normalized}/issues/${issueRef}`;
   }
+
+  const safeUrl = yamlSafeUrl(issueUrl);
 
   let content = "";
   if (existsSync(filePath)) {
@@ -407,11 +457,11 @@ function cmdLinkLocal(args: Map<string, string[]>): void {
     fm = fm.replace(/^issue:.*$/m, "").replace(/^issue-state:.*$/m, "");
     fm = fm.replace(/\n{2,}/g, "\n").trim();
     if (fm.length > 0) fm += "\n";
-    fm += `issue: ${issueUrl}\nissue-state: open\n`;
+    fm += `issue: ${safeUrl}\nissue-state: open\n`;
 
     content = `${FM_OPEN}\n${fm}${FM_OPEN}\n${body}`;
   } else {
-    const fm = `${FM_OPEN}\nissue: ${issueUrl}\nissue-state: open\n${FM_OPEN}\n`;
+    const fm = `${FM_OPEN}\nissue: ${safeUrl}\nissue-state: open\n${FM_OPEN}\n`;
     content = fm + content;
   }
 
@@ -429,19 +479,21 @@ function cmdListByLabel(args: Map<string, string[]>): void {
 
   if (!label) die("--label is required");
 
-  const cmd: string[] = [bin, "issue", "list", "--label", label, "--state", state, "--json", "url,title,state,labels,number,createdAt"];
-
-  if (since && platform === "github") {
-    cmd.push("--search", `created:>=${since}`);
+  let cmd: string[];
+  if (platform === "github") {
+    cmd = [bin, "issue", "list", "--label", label, "--state", state, "--json", "url,title,state,labels,number,createdAt"];
+    if (since) cmd.push("--search", `created:>=${since}`);
+  } else {
+    cmd = [bin, "issue", "list", "--label", label, "--state", state === "all" ? "all" : state === "closed" ? "closed" : "opened", "--output", "json"];
   }
 
-  const result = Bun.spawnSync({ cmd });
+  const result = spawnWithRetry({ cmd });
 
   if (result.exitCode !== 0) {
-    die(`list-by-label failed: ${result.stderr.toString().trim()}`);
+    die(`list-by-label failed: ${result.stderr.trim()}`);
   }
 
-  let issues = JSON.parse(result.stdout.toString());
+  let issues = JSON.parse(result.stdout);
 
   if (since && platform === "gitlab") {
     const sinceDate = new Date(since);
@@ -486,12 +538,14 @@ function cmdComment(args: Map<string, string[]>): void {
   if (!existsSync(bodyFile)) die(`body file not found: ${bodyFile}`);
 
   const num = resolve(numberOrUrl);
-  const result = Bun.spawnSync({
-    cmd: [bin, "issue", "comment", num, "--body-file", bodyFile],
-  });
+  const body = readFileSync(bodyFile, "utf-8");
+  const cmd: string[] = platform === "github"
+    ? [bin, "issue", "comment", num, "--body-file", bodyFile]
+    : [bin, "issue", "note", num, "--message", body];
+  const result = spawnWithRetry({ cmd });
 
   if (result.exitCode !== 0) {
-    die(`comment failed: ${result.stderr.toString().trim()}`);
+    die(`comment failed: ${result.stderr.trim()}`);
   }
 }
 
@@ -508,17 +562,22 @@ function cmdClose(args: Map<string, string[]>): void {
 
   if (commentBodyFile) {
     if (!existsSync(commentBodyFile)) die(`comment body file not found: ${commentBodyFile}`);
-    const commentResult = Bun.spawnSync({
-      cmd: [bin, "issue", "comment", num, "--body-file", commentBodyFile],
-    });
+    const body = readFileSync(commentBodyFile, "utf-8");
+    const commentCmd: string[] = platform === "github"
+      ? [bin, "issue", "comment", num, "--body-file", commentBodyFile]
+      : [bin, "issue", "note", num, "--message", body];
+    const commentResult = spawnWithRetry({ cmd: commentCmd });
     if (commentResult.exitCode !== 0) {
-      die(`close-comment failed: ${commentResult.stderr.toString().trim()}`);
+      die(`close-comment failed: ${commentResult.stderr.trim()}`);
     }
   }
 
-  const result = Bun.spawnSync({ cmd: [bin, "issue", "close", num] });
+  const closeCmd: string[] = platform === "github"
+    ? [bin, "issue", "close", num]
+    : [bin, "issue", "update", num, "--state-event", "close"];
+  const result = spawnWithRetry({ cmd: closeCmd });
   if (result.exitCode !== 0) {
-    die(`close failed: ${result.stderr.toString().trim()}`);
+    die(`close failed: ${result.stderr.trim()}`);
   }
 }
 
@@ -594,11 +653,91 @@ Subcommands:
   read <number-or-url> [--comments-trust trusted-only|issue-author-only|all]
   link-local --file <path> --issue <number-or-url>
   list-by-label --label <l> [--state open|closed|all] [--since <iso>]
+  find --label <l> [--state open|closed|all] [--since <iso>]
   validate-url <url>
   comment <number-or-url> --body-file <path>
   close <number-or-url> [--comment-body-file <path>]
   handoff --issue <number-or-url> --kind <kind> [--out <path>]`);
   process.exit(0);
+}
+
+const SUBCOMMAND_HELP: Record<string, string> = {
+  "detect-platform": `Usage: gstack-issue-artifact detect-platform
+
+Detect the hosting platform (github|gitlab|none) for the current repository.
+Prints one of: github, gitlab, none.`,
+
+  "create": `Usage: gstack-issue-artifact create --kind <kind> --title <t> --body-file <path> [--label <l>]...
+
+Create a new issue/MR artifact.
+  --kind       Artifact kind (design-doc, ceo-plan, eng-plan, etc.)
+  --title      Issue title
+  --body-file  Path to a file containing the issue body (markdown)
+  --label      Labels to apply (repeatable)`,
+
+  "update": `Usage: gstack-issue-artifact update <number-or-url> --body-file <path>
+
+Update an existing issue's body.
+  <number-or-url>  Issue number or full URL
+  --body-file      Path to a file containing the new body`,
+
+  "read": `Usage: gstack-issue-artifact read <number-or-url> [--comments-trust <mode>]
+
+Read an issue and its comments, outputting normalized JSON.
+  <number-or-url>   Issue number or full URL
+  --comments-trust   Filter mode: trusted-only (default), issue-author-only, all`,
+
+  "link-local": `Usage: gstack-issue-artifact link-local --file <path> --issue <number-or-url>
+
+Stamp a local file with YAML frontmatter linking it to an issue.
+  --file    Local file path to stamp
+  --issue   Issue number or full URL`,
+
+  "list-by-label": `Usage: gstack-issue-artifact list-by-label --label <l> [--state <s>] [--since <iso>]
+
+List issues matching a label.
+  --label   Label to filter by (required)
+  --state   Filter by state: open (default), closed, all
+  --since   Only issues updated after this ISO timestamp`,
+
+  "find": `Usage: gstack-issue-artifact find --label <l> [--state <s>] [--since <iso>]
+
+Alias for list-by-label. List issues matching a label.
+  --label   Label to filter by (required)
+  --state   Filter by state: open (default), closed, all
+  --since   Only issues updated after this ISO timestamp`,
+
+  "validate-url": `Usage: gstack-issue-artifact validate-url <url>
+
+Validate that a URL is a well-formed GitHub/GitLab issue URL.
+  <url>   The URL to validate. Exits 0 if valid, 1 if not.`,
+
+  "comment": `Usage: gstack-issue-artifact comment <number-or-url> --body-file <path>
+
+Add a comment to an existing issue.
+  <number-or-url>  Issue number or full URL
+  --body-file      Path to a file containing the comment body`,
+
+  "close": `Usage: gstack-issue-artifact close <number-or-url> [--comment-body-file <path>]
+
+Close an issue, optionally with a closing comment.
+  <number-or-url>      Issue number or full URL
+  --comment-body-file  Optional path to a closing comment body`,
+
+  "handoff": `Usage: gstack-issue-artifact handoff --issue <number-or-url> --kind <kind> [--out <path>]
+
+Generate a handoff markdown file for an issue.
+  --issue   Issue number or full URL
+  --kind    Artifact kind
+  --out     Output file path (default: stdout)`,
+};
+
+if (rest.includes("--help") || rest.includes("-h")) {
+  const help = SUBCOMMAND_HELP[subcommand];
+  if (help) {
+    console.log(help);
+    process.exit(0);
+  }
 }
 
 const args = parseArgs(rest);
@@ -620,6 +759,7 @@ switch (subcommand) {
     cmdLinkLocal(args);
     break;
   case "list-by-label":
+  case "find":
     cmdListByLabel(args);
     break;
   case "validate-url":
