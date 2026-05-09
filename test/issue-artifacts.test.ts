@@ -378,4 +378,45 @@ describe("gstack-issue-artifact (GitLab)", () => {
     expect(parsed.comments_trusted[0].author).toBe("garry");
     expect(parsed.comments_dropped_count).toBe(4);
   });
+
+  test("trusted-only calls glab api for member access levels (F15)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ia-gl-api-"));
+
+    const result = runGlab(["read", "42", "--comments-trust", "trusted-only"], tmpDir);
+    expect(result.exitCode).toBe(0);
+
+    const apiCalls = result.ledger.filter(e =>
+      e.argv.some((a: string) => a.includes("members/all"))
+    );
+    expect(apiCalls.length).toBeGreaterThan(0);
+  });
+
+  test("ensureLabel uses --name flag and --output json for GitLab (F2)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ia-gl-label-"));
+    const bodyFile = join(tmpDir, "body.md");
+    writeFileSync(bodyFile, "body");
+
+    const result = runGlab(["create", "--kind", "design-doc", "--title", "GL Label Test", "--body-file", bodyFile], tmpDir);
+
+    const labelListCalls = result.ledger.filter(e =>
+      e.argv.includes("label") && e.argv.includes("list") && e.argv.includes("--output") && e.argv.includes("json")
+    );
+    expect(labelListCalls.length).toBeGreaterThan(0);
+  });
+
+  test("validate-url accepts same-repo GitLab URL with /-/issues/ (F16)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ia-gl-url-ok-"));
+
+    const result = runGlab(["validate-url", "https://gitlab.com/test/repo/-/issues/42"], tmpDir);
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("validate-url rejects cross-repo GitLab URL (F16)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "ia-gl-url-reject-"));
+
+    const result = runGlab(["validate-url", "https://gitlab.com/other-org/other-repo/-/issues/1"], tmpDir);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("BLOCKED");
+    expect(result.stderr).toContain("rejected");
+  });
 });
