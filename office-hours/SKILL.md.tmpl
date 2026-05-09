@@ -650,6 +650,17 @@ Present the reviewed design doc to the user via AskUserQuestion:
 
 {{GBRAIN_SAVE_RESULTS}}
 
+### Publish to issue tracker
+
+Set the artifact path and title from the design doc just written, then publish:
+
+```bash
+ISSUE_ARTIFACT_PATH="$HOME/.gstack/projects/$SLUG/$USER-$BRANCH-design-$DATETIME.md"
+ISSUE_ARTIFACT_TITLE="Design: $SLUG"
+```
+
+{{ISSUE_ARTIFACTS_BLOCK}}
+
 ---
 
 ## Phase 6: Handoff — The Relationship Closing

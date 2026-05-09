@@ -491,6 +491,17 @@ After shipping DESIGN.md, if the session produced screen-level mockups or page l
 
 {{GBRAIN_SAVE_RESULTS}}
 
+### Publish to issue tracker
+
+Set the artifact path and title from the DESIGN.md just written, then publish:
+
+```bash
+ISSUE_ARTIFACT_PATH="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/DESIGN.md"
+ISSUE_ARTIFACT_TITLE="Design system: $(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")"
+```
+
+{{ISSUE_ARTIFACTS_BLOCK}}
+
 ## Important Rules
 
 1. **Propose, don't present menus.** You are a consultant, not a form. Make opinionated recommendations based on the product context, then let the user adjust.

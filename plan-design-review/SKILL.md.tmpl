@@ -444,6 +444,21 @@ Substitute values from the Completion Summary:
 
 {{PLAN_FILE_REVIEW_REPORT}}
 
+### Publish to issue tracker
+
+Detect the plan file path (same glob used by the review report above), then publish:
+
+```bash
+SLUG=$(~/.claude/skills/gstack/browse/bin/remote-slug 2>/dev/null || basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' || echo 'no-branch')
+_PLAN=$(ls -t ~/.gstack/projects/$SLUG/*-$BRANCH-design-*.md 2>/dev/null | head -1)
+[ -z "$_PLAN" ] && _PLAN=$(ls -t ~/.gstack/projects/$SLUG/*-design-*.md 2>/dev/null | head -1)
+ISSUE_ARTIFACT_PATH="${_PLAN:-/dev/null}"
+ISSUE_ARTIFACT_TITLE="Design plan: $(basename "${_PLAN:-unknown}" .md | sed 's/^[0-9]*-//')"
+```
+
+{{ISSUE_ARTIFACTS_BLOCK}}
+
 {{LEARNINGS_LOG}}
 
 ## Next Steps — Review Chaining

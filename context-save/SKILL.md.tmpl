@@ -197,6 +197,17 @@ Duration: {duration or "unknown"}
 Restore later with /context-restore.
 ```
 
+### Publish to issue tracker
+
+Set the artifact path and title from the checkpoint just written, then publish:
+
+```bash
+ISSUE_ARTIFACT_PATH="$FILE"
+ISSUE_ARTIFACT_TITLE="Context: $TITLE_SLUG"
+```
+
+{{ISSUE_ARTIFACTS_BLOCK}}
+
 ---
 
 ## List flow
