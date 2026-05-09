@@ -271,7 +271,7 @@ function cmdCreate(args: Map<string, string[]>): void {
 
   const cmd: string[] = platform === "github"
     ? [bin, "issue", "create", "--title", title, "--body-file", bodyFile, ...labelArgs]
-    : [bin, "issue", "create", "--title", title, "--description", readFileSync(bodyFile, "utf-8"), ...labelArgs];
+    : [bin, "issue", "create", "--title", title, "--description-file", bodyFile, ...labelArgs];
 
   const result = spawnWithRetry({ cmd });
 
@@ -310,10 +310,9 @@ function cmdUpdate(args: Map<string, string[]>): void {
   if (!existsSync(bodyFile)) die(`body file not found: ${bodyFile}`);
 
   const num = resolve(numberOrUrl);
-  const body = readFileSync(bodyFile, "utf-8");
   const cmd: string[] = platform === "github"
     ? [bin, "issue", "edit", num, "--body-file", bodyFile]
-    : [bin, "issue", "update", num, "--description", body];
+    : [bin, "issue", "update", num, "--description-file", bodyFile];
   const result = spawnWithRetry({ cmd });
 
   if (result.exitCode !== 0) {
@@ -354,7 +353,7 @@ function cmdRead(args: Map<string, string[]>): void {
   const labels: string[] = (raw.labels ?? []).map((l: any) => l.name ?? l);
 
   type RawComment = {
-    author: { login?: string; username?: string };
+    author: { login?: string; username?: string; access_level?: number };
     body: string;
     createdAt?: string;
     created_at?: string;
@@ -384,7 +383,8 @@ function cmdRead(args: Map<string, string[]>): void {
         break;
       case "trusted-only":
         if (platform === "gitlab") {
-          keep = author === issueAuthor;
+          const accessLevel = c.author?.access_level;
+          keep = typeof accessLevel === "number" && accessLevel >= 30;
         } else {
           keep = TRUSTED_ASSOCIATIONS.has(association);
         }
@@ -416,10 +416,11 @@ function cmdRead(args: Map<string, string[]>): void {
 
 function yamlSafeUrl(url: string): string {
   if (/[\n\r]/.test(url)) die("issue URL contains newline — refusing to write (possible injection)");
-  if (/[:#{}[\]&*?|><!%@`]/.test(url.replace(/^https?:\/\//, "").replace(/[#].*$/, ""))) {
+  const body = url.replace(/^https?:\/\//, "").replace(/[#].*$/, "");
+  if (/[:#{}[\]&*?|><!%@`]/.test(body)) {
     return `"${url.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   }
-  return `"${url}"`;
+  return url;
 }
 
 function cmdLinkLocal(args: Map<string, string[]>): void {
@@ -538,10 +539,9 @@ function cmdComment(args: Map<string, string[]>): void {
   if (!existsSync(bodyFile)) die(`body file not found: ${bodyFile}`);
 
   const num = resolve(numberOrUrl);
-  const body = readFileSync(bodyFile, "utf-8");
   const cmd: string[] = platform === "github"
     ? [bin, "issue", "comment", num, "--body-file", bodyFile]
-    : [bin, "issue", "note", num, "--message", body];
+    : [bin, "issue", "note", num, "--message-file", bodyFile];
   const result = spawnWithRetry({ cmd });
 
   if (result.exitCode !== 0) {
@@ -562,10 +562,9 @@ function cmdClose(args: Map<string, string[]>): void {
 
   if (commentBodyFile) {
     if (!existsSync(commentBodyFile)) die(`comment body file not found: ${commentBodyFile}`);
-    const body = readFileSync(commentBodyFile, "utf-8");
     const commentCmd: string[] = platform === "github"
       ? [bin, "issue", "comment", num, "--body-file", commentBodyFile]
-      : [bin, "issue", "note", num, "--message", body];
+      : [bin, "issue", "note", num, "--message-file", commentBodyFile];
     const commentResult = spawnWithRetry({ cmd: commentCmd });
     if (commentResult.exitCode !== 0) {
       die(`close-comment failed: ${commentResult.stderr.trim()}`);
