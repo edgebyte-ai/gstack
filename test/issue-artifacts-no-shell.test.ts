@@ -71,6 +71,16 @@ describe("issue-artifacts-no-shell (AC2)", () => {
     });
   }
 
+  function ledgerArgv(tmpDir: string): string[][] {
+    const ledger = join(tmpDir, "ledger.jsonl");
+    if (!existsSync(ledger)) return [];
+    return readFileSync(ledger, "utf-8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line).argv as string[]);
+  }
+
   test("malicious title does not execute via filesystem", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "no-shell-test-"));
     const marker = join(tmpDir, "PWNED");
@@ -85,6 +95,11 @@ describe("issue-artifacts-no-shell (AC2)", () => {
     ]);
 
     expect(existsSync(marker)).toBe(false);
+
+    const allArgv = ledgerArgv(tmpDir);
+    expect(allArgv.length).toBeGreaterThan(0);
+    const flat = allArgv.flat();
+    expect(flat.some((a) => a.includes("$(touch"))).toBe(true);
   });
 
   test("malicious label does not execute via filesystem", () => {
@@ -102,6 +117,11 @@ describe("issue-artifacts-no-shell (AC2)", () => {
     ]);
 
     expect(existsSync(marker)).toBe(false);
+
+    const allArgv = ledgerArgv(tmpDir);
+    expect(allArgv.length).toBeGreaterThan(0);
+    const flat = allArgv.flat();
+    expect(flat.some((a) => a.includes("$(touch"))).toBe(true);
   });
 
   test("malicious URL does not execute via filesystem", () => {
@@ -110,8 +130,12 @@ describe("issue-artifacts-no-shell (AC2)", () => {
 
     const maliciousUrl = `https://example.com/$(touch ${marker})`;
 
-    spawnArtifact(tmpDir, ["validate-url", maliciousUrl]);
+    const result = spawnArtifact(tmpDir, ["validate-url", maliciousUrl]);
 
     expect(existsSync(marker)).toBe(false);
+
+    const stderr = result.stderr.toString();
+    expect(stderr).toContain("BLOCKED");
+    expect(result.exitCode).not.toBe(0);
   });
 });
