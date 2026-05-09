@@ -1,41 +1,76 @@
 /**
  * Issue-artifacts resolver — gate + discover blocks for issue-backed artifacts.
  *
- * Registered but not wired into any template yet (that's sub-issues #3/#4).
- * Both expansions emit config + policy gates as the FIRST executable lines,
- * before any gh/glab invocation.
+ * SHAPE CONSTRAINT (AC3, issue #3):
+ * generateIssueArtifactsBlock MUST emit exactly ONE ```bash fenced code block
+ * between <!-- @issue-artifacts:begin --> and <!-- @issue-artifacts:end -->
+ * anchor markers. No prose, no second fenced block, no shell-incompatible
+ * instructions between the anchors. Narrative/rationale lives OUTSIDE the
+ * anchors. This constraint is enforced by:
+ *   - test/issue-artifacts-off-gate.test.ts (AC3, this repo)
+ *   - test/fixtures/issue-artifacts/ stub-shim contract test (#2 AC8)
+ * A regression in resolver shape fails BOTH tests.
  */
 import type { TemplateContext } from './types';
 
+const SKILL_KIND_MAP: Record<string, { kind: string; extraLabels?: string[] }> = {
+  'office-hours':        { kind: 'gstack:design-doc' },
+  'plan-ceo-review':     { kind: 'gstack:ceo-plan' },
+  'plan-eng-review':     { kind: 'gstack:eng-plan' },
+  'plan-design-review':  { kind: 'gstack:design-plan' },
+  'plan-devex-review':   { kind: 'gstack:devex-plan' },
+  'design-consultation': { kind: 'gstack:design-doc', extraLabels: ['design-system'] },
+  'retro':               { kind: 'gstack:retro' },
+  'context-save':        { kind: 'gstack:context-save' },
+};
+
 export function generateIssueArtifactsBlock(ctx: TemplateContext): string {
   const bin = ctx.paths.binDir;
-  return `## Issue-Backed Artifacts
+  const mapping = SKILL_KIND_MAP[ctx.skillName];
+  const kind = mapping?.kind ?? 'gstack:design-doc';
+  const extraLabelFlags = mapping?.extraLabels
+    ? mapping.extraLabels.map(l => ` --label ${l}`).join('')
+    : '';
 
-Before any issue tracker operation, check both gates:
+  const bashBlock = [
+    `ISSUE_MODE=$(${bin}/gstack-config get issue_artifacts)`,
+    `if [[ "$ISSUE_MODE" == "off" ]]; then exit 0; fi`,
+    ``,
+    `ISSUE_TRACKER=$(${bin}/gstack-config get issue_tracker)`,
+    `if [[ "$ISSUE_TRACKER" == "none" ]]; then`,
+    `  echo "[issue-artifacts] FALLBACK: tracker disabled by config"`,
+    `  exit 0`,
+    `fi`,
+    ``,
+    `PLATFORM=$(${bin}/gstack-issue-artifact detect-platform)`,
+    `if [[ "$PLATFORM" == "none" ]]; then`,
+    `  echo "[issue-artifacts] FALLBACK: no tracker detected"`,
+    `  exit 0`,
+    `fi`,
+    ``,
+    `POLICY_STATE=$(${bin}/gstack-issue-repo-policy check --op write 2>&1) || {`,
+    `  echo "[issue-artifacts] BLOCKED: repo policy = $POLICY_STATE"`,
+    `  exit 0`,
+    `}`,
+    ``,
+    `ISSUE_URL=$(${bin}/gstack-issue-artifact create --kind ${kind}${extraLabelFlags} \\`,
+    `  --title "$ISSUE_ARTIFACT_TITLE" \\`,
+    `  --body-file "$ISSUE_ARTIFACT_PATH") || {`,
+    `  echo "[issue-artifacts] FALLBACK: $(echo "$ISSUE_URL" | head -1)"`,
+    `  exit 0`,
+    `}`,
+    ``,
+    `${bin}/gstack-issue-artifact link-local --file "$ISSUE_ARTIFACT_PATH" --issue "$ISSUE_URL"`,
+    `echo "[issue-artifacts] published ${kind} -> $ISSUE_URL"`,
+  ].join('\n');
 
+  return `After writing the local artifact file, publish it to the issue tracker. Set two shell variables before running the block: \`ISSUE_ARTIFACT_PATH\` (absolute path to the local file just written) and \`ISSUE_ARTIFACT_TITLE\` (human-readable title for the issue).
+
+<!-- @issue-artifacts:begin -->
 \`\`\`bash
-ISSUE_MODE=$(${bin}/gstack-config get issue_artifacts)
-if [[ "$ISSUE_MODE" == "off" ]]; then
-  echo "[issue-artifacts] Disabled via config (issue_artifacts=off). Skipping."
-  # Skip all issue operations in this skill run
-fi
-
-${bin}/gstack-issue-repo-policy check --op write
-if [[ $? -ne 0 ]]; then
-  echo "[issue-artifacts] Write blocked by repo policy. Skipping write operations."
-  # Fall back to local-only mode for this skill run
-fi
+${bashBlock}
 \`\`\`
-
-When both gates pass, use the issue artifact helper for all tracker operations:
-
-- **Create:** \`${bin}/gstack-issue-artifact create --kind <kind> --title "<title>" --body-file <path>\`
-- **Update:** \`${bin}/gstack-issue-artifact update <number-or-url> --body-file <path>\`
-- **Read:** \`${bin}/gstack-issue-artifact read <number-or-url>\`
-- **Comment:** \`${bin}/gstack-issue-artifact comment <number-or-url> --body-file <path>\`
-- **Close:** \`${bin}/gstack-issue-artifact close <number-or-url> [--comment-body-file <path>]\`
-- **Link local:** \`${bin}/gstack-issue-artifact link-local --file <path> --issue <url>\`
-- **List:** \`${bin}/gstack-issue-artifact list-by-label --label <label> [--state open|closed|all]\``;
+<!-- @issue-artifacts:end -->`;
 }
 
 export function generateIssueArtifactsDiscover(ctx: TemplateContext): string {
