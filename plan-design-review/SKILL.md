@@ -1771,6 +1771,55 @@ prior versions to leave the report mid-file when an older report already lived
 there — the user then sees a plan whose review report is not at the bottom and
 (correctly) rejects it.
 
+### Publish to issue tracker
+
+Detect the plan file path (same glob used by the review report above), then publish:
+
+```bash
+SLUG=$(~/.claude/skills/gstack/browse/bin/remote-slug 2>/dev/null || basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' || echo 'no-branch')
+_PLAN=$(ls -t ~/.gstack/projects/$SLUG/*-$BRANCH-design-*.md 2>/dev/null | head -1)
+[ -z "$_PLAN" ] && _PLAN=$(ls -t ~/.gstack/projects/$SLUG/*-design-*.md 2>/dev/null | head -1)
+ISSUE_ARTIFACT_PATH="${_PLAN:-/dev/null}"
+ISSUE_ARTIFACT_TITLE="Design plan: $(basename "${_PLAN:-unknown}" .md | sed 's/^[0-9]*-//')"
+```
+
+After writing the local artifact file, publish it to the issue tracker. Set two shell variables before running the block: `ISSUE_ARTIFACT_PATH` (absolute path to the local file just written) and `ISSUE_ARTIFACT_TITLE` (human-readable title for the issue).
+
+<!-- @issue-artifacts:begin -->
+```bash
+ISSUE_MODE=$(~/.claude/skills/gstack/bin/gstack-config get issue_artifacts)
+if [[ "$ISSUE_MODE" == "off" ]]; then exit 0; fi
+
+ISSUE_TRACKER=$(~/.claude/skills/gstack/bin/gstack-config get issue_tracker)
+if [[ "$ISSUE_TRACKER" == "none" ]]; then
+  echo "[issue-artifacts] FALLBACK: tracker disabled by config"
+  exit 0
+fi
+
+PLATFORM=$(~/.claude/skills/gstack/bin/gstack-issue-artifact detect-platform)
+if [[ "$PLATFORM" == "none" ]]; then
+  echo "[issue-artifacts] FALLBACK: no tracker detected"
+  exit 0
+fi
+
+POLICY_STATE=$(~/.claude/skills/gstack/bin/gstack-issue-repo-policy check --op write 2>&1) || {
+  echo "[issue-artifacts] BLOCKED: repo policy = $POLICY_STATE"
+  exit 0
+}
+
+ISSUE_URL=$(~/.claude/skills/gstack/bin/gstack-issue-artifact create --kind gstack:design-plan \
+  --title "$ISSUE_ARTIFACT_TITLE" \
+  --body-file "$ISSUE_ARTIFACT_PATH") || {
+  echo "[issue-artifacts] FALLBACK: $(echo "$ISSUE_URL" | head -1)"
+  exit 0
+}
+
+~/.claude/skills/gstack/bin/gstack-issue-artifact link-local --file "$ISSUE_ARTIFACT_PATH" --issue "$ISSUE_URL"
+echo "[issue-artifacts] published gstack:design-plan -> $ISSUE_URL"
+```
+<!-- @issue-artifacts:end -->
+
 ## Capture Learnings
 
 If you discovered a non-obvious pattern, pitfall, or architectural insight during
