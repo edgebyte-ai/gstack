@@ -1,5 +1,5 @@
 ---
-name: plan-tune
+name: gstack-plan-tune
 preamble-tier: 2
 version: 1.0.0
 description: |

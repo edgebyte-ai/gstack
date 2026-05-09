@@ -1,5 +1,5 @@
 ---
-name: browse
+name: gstack-browse
 preamble-tier: 1
 version: 1.1.0
 description: |

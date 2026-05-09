@@ -1,5 +1,5 @@
 ---
-name: ship
+name: gstack-ship
 preamble-tier: 4
 version: 1.0.0
 description: |

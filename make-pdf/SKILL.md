@@ -1,5 +1,5 @@
 ---
-name: make-pdf
+name: gstack-make-pdf
 preamble-tier: 1
 version: 1.0.0
 description: |

@@ -1,5 +1,5 @@
 ---
-name: autoplan
+name: gstack-autoplan
 preamble-tier: 3
 version: 1.0.0
 description: |

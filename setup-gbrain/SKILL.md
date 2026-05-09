@@ -1,5 +1,5 @@
 ---
-name: setup-gbrain
+name: gstack-setup-gbrain
 preamble-tier: 2
 version: 1.0.0
 description: |

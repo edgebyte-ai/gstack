@@ -1,5 +1,5 @@
 ---
-name: sync-gbrain
+name: gstack-sync-gbrain
 preamble-tier: 2
 version: 1.0.0
 description: |

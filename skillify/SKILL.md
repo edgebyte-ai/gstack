@@ -1,5 +1,5 @@
 ---
-name: skillify
+name: gstack-skillify
 version: 1.0.0
 description: |
   Codify the most recent successful /scrape flow into a permanent
