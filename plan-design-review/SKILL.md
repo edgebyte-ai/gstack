@@ -1776,6 +1776,7 @@ there — the user then sees a plan whose review report is not at the bottom and
 Detect the plan file path (same glob used by the review report above), then publish:
 
 ```bash
+if [[ -n "$ZSH_VERSION" ]]; then setopt +o nomatch 2>/dev/null; fi
 SLUG=$(~/.claude/skills/gstack/browse/bin/remote-slug 2>/dev/null || basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' || echo 'no-branch')
 _PLAN=$(ls -t ~/.gstack/projects/$SLUG/*-$BRANCH-design-*.md 2>/dev/null | head -1)
